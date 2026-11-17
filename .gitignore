@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+/data/
+/buffer/
+/models/
+/output/
+/rclone/
+.pytest_cache/
+*.egg-info/
+
+# secrets / local settings (copy from config/config.example.yaml)
+/config/config.yaml

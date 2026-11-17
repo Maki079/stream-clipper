@@ -1,0 +1,12 @@
+.venv
+**/__pycache__
+.pytest_cache
+data
+buffer
+models
+output
+rclone
+dryrun
+crop
+config/config.yaml
+*.egg-info

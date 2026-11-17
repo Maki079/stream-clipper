@@ -1,0 +1,149 @@
+# stream-clipper example config. Copy to config/config.yaml and edit.
+# Validate with:  docker compose run --rm clipper validate-config
+# Anything marked FILL_ME must be replaced from the real campaign briefs.
+
+global:
+  timezone: Europe/Bratislava
+  log_level: INFO
+  buffer:
+    segment_seconds: 5
+    retention_seconds: 300        # rolling live buffer (~5 min)
+    poll_interval_seconds: 60     # check offline channels this often
+  workers:
+    cpu_workers: 3                # transcribe/render processes (16 vCPU box: 3 x 4 threads)
+    threads_per_worker: 4
+    io_slots: 4                   # downloads / cuts / uploads in parallel
+    max_attempts: 5
+  whisper:
+    model: medium                 # subtitles
+    vod_scoring_model: small      # full-length VOD transcription for highlight scoring
+    compute_type: int8
+    vad: true
+  output:
+    video_bitrate: 8M
+    preset: medium
+    font: Montserrat ExtraBold
+    font_size: 80
+    motion:                       # smart zoom + motion effects (README section 3b)
+      enabled: true
+      smart_zoom: true            # punch-in on loud reactions + the chat-spike moment
+      zoom_strength: 0.15         # 115 %
+      max_zooms_per_minute: 3
+      ken_burns: 0.05             # slow push-in over the whole clip
+      shake: true                 # short shake on the strongest moment
+  delivery:
+    backend: local                # local -> /output/<campaign>/<date>/ ; rclone -> Google Drive
+    local_dir: /output
+    rclone:
+      remote: gdrive
+      root: stream-clipper
+      config_path: /config/rclone/rclone.conf
+  notifications:
+    backend: none                 # none | telegram | ntfy   (telegram: README section 5)
+    telegram:
+      bot_token: ""               # from @BotFather
+      chat_id: ""                 # empty = auto (whoever presses Start on the bot first)
+      send_video: true            # every clip as a video + copy-ready captions
+    spike_alerts: true            # silent "chat spike" ping when a clip starts
+    ntfy: {server: "https://ntfy.sh", topic: "", token: ""}
+    top_n: 3
+    batch_seconds: 300
+    daily_summary_time: "20:00"
+  llm:
+    enabled: false                # optional local Ollama (see README)
+    ollama_url: http://ollama:11434
+    model: qwen2.5:7b-instruct
+
+campaigns:
+  CORE:
+    creator_name: "FILL_ME"
+    required_hashtags: ["#FILL_ME"]
+    caption_language: en
+    allowed_platforms: [tiktok, instagram, youtube]
+    min_seconds: 61
+    max_seconds: 90
+    notes: "Paste rules from the CORE brief here."
+  Kai:
+    creator_name: "@kaicenat"
+    creator_aliases: [kai, kai cenat, kaicenat]
+    required_hashtags: ["#FILL_ME"]
+    min_seconds: 61
+    max_seconds: 90
+  Lacy:
+    creator_name: "@lacy"
+    creator_aliases: [lacy]
+    required_hashtags: ["#FILL_ME"]
+    min_seconds: 61
+    max_seconds: 90
+  Jason:
+    creator_name: "@jasontheween"
+    creator_aliases: [jason, jasontheween, the ween]
+    required_hashtags: ["#FILL_ME"]
+    min_seconds: 61
+    max_seconds: 90
+
+sources:
+  kaicenat:
+    mode: live
+    platform: twitch
+    url: https://www.twitch.tv/kaicenat
+    language: en
+    campaigns: [Kai, CORE]
+    layout:
+      type: blur_fit              # IRL-heavy streams; switch to stack once crops are measured
+    clip:
+      pre_seconds: 30
+      post_seconds: 35
+      chat_delay_seconds: 6
+    spike:
+      # threshold = max(min_messages, multiplier x avg, avg + z_threshold x std)
+      # avg/std = messages per 10 s over the last 5 min, recomputed every second
+      multiplier: 2.0             # chat must at least double vs. its own average
+      z_threshold: 3.0            # ...and stand out from its normal noise
+      min_messages: 60            # only a sanity floor; the average does the work
+      min_unique_chatters: 30
+      ignore_patterns:
+        - "^(\\S+)( \\1)+$"       # same emote/word repeated
+        - "(?i)hype train"
+        - "^!\\w+"                # bot commands
+
+  lacy:
+    enabled: false                # set platform + url, then enable
+    mode: live
+    platform: FILL_ME             # twitch | youtube | kick
+    url: FILL_ME
+    campaigns: [Lacy, CORE]
+    layout:
+      type: stack                 # measure crops with: stream-clipper crop-helper
+      facecam: {x: 0, y: 0, w: 480, h: 360}
+      gameplay: {x: 0, y: 0, w: 1920, h: 1080}
+      facecam_height: 700
+
+  marlon:
+    enabled: false
+    mode: live
+    platform: FILL_ME
+    url: FILL_ME
+    campaigns: [CORE]
+
+  jasontheween:
+    enabled: false
+    mode: live
+    platform: FILL_ME
+    url: FILL_ME
+    campaigns: [Jason, CORE]
+
+  kai_youtube_vods:
+    enabled: false
+    mode: vod
+    platform: youtube
+    url: https://www.youtube.com/@KaiCenat/videos
+    language: en
+    campaigns: [Kai]
+    layout: {type: blur_fit}
+    vod:
+      watch: true                 # poll the channel for new uploads
+      watch_interval_seconds: 3600
+      watch_max_items: 3
+      top_n: 10
+      keywords: ["no way", "oh my god", "bro", "let's go", "chat", "what"]

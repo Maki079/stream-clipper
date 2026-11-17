@@ -1,0 +1,37 @@
+services:
+  clipper:
+    build: .
+    image: stream-clipper:latest
+    container_name: stream-clipper
+    restart: unless-stopped
+    command: ["run", "--record-chat"]   # chat logs in data/chatlogs/ for tuning; remove the flag later
+    stop_grace_period: 60s          # running renders get time to finish; the rest is requeued
+    environment:
+      - TZ=Europe/Bratislava
+    volumes:
+      - ./config:/config            # config.yaml
+      - ./rclone:/config/rclone     # rclone.conf (Google Drive OAuth), only needed for delivery.backend: rclone
+      - ./buffer:/buffer            # rolling live buffers (~5 min per channel)
+      - ./models:/models            # whisper models (downloaded once, ~2 GB)
+      - ./data:/data                # SQLite state, work files, VOD downloads, chat logs
+      - ./output:/output            # finished clips when delivery.backend: local
+    deploy:
+      resources:
+        limits:
+          cpus: "15"                # leave one core for the host
+          memory: 40g
+    logging:
+      driver: json-file
+      options: {max-size: "50m", max-file: "5"}
+
+  # Optional local LLM for hook titles / VOD rating: docker compose --profile llm up -d
+  # then: docker compose exec ollama ollama pull qwen2.5:7b-instruct  and set global.llm.enabled: true
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["llm"]
+    restart: unless-stopped
+    volumes:
+      - ./models/ollama:/root/.ollama
+    deploy:
+      resources:
+        limits: {cpus: "8", memory: 12g}
