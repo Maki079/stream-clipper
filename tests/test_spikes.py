@@ -184,3 +184,43 @@ def test_threshold_rises_with_growing_chat():
     rate = lambda t: 30 if 700 <= t < 712 else 2 + 6 * min(t, 600) / 600
     spikes = simulate(SpikeCfg(), rate)
     assert len(spikes) == 1 and 700 <= spikes[0].start < 712
+
+
+def test_reaction_chat_scores_higher_than_poll_spam():
+    react = lambda sec, rnd: rnd.choice(["LOL", "LMAOOO", "???", "OOOO", "no way", "KEKW"]) if 400 <= sec < 415 else f"msg {rnd.random()}"
+    poll = lambda sec, rnd: rnd.choice(["A", "B", "pick B", "team A"]) if 400 <= sec < 415 else f"msg {rnd.random()}"
+    s_react = simulate(SpikeCfg(), burst(1.5, 12, 400), text_fn=react)[0]
+    s_poll = simulate(SpikeCfg(), burst(1.5, 12, 400), text_fn=poll)[0]
+    assert s_react.reaction_share > 0.8 and s_poll.reaction_share < 0.1
+    assert s_react.strength > 2 * s_poll.strength
+
+
+def test_default_ignore_patterns():
+    det = SpikeDetector(SpikeCfg(), 0)
+    for text in ["67", "5-13", "yes \\u034f", "RT", "!watchtime", "vape break", "BONG BREAK LOL"]:
+        assert not det.accepts(ChatMessage(0, "u", text.encode().decode("unicode_escape"))), text
+    for text in ["LOL", "W", "no way bro", "???", "OOOO"]:
+        assert det.accepts(ChatMessage(0, "u", text)), text
+
+
+def test_planner_quality_gate_and_hourly_budget():
+    def sp(t, strength):
+        s = Spike(t, t + 5, 100, 50, 10, 5, 10, [])
+        s.reaction_share = 0.5
+        object.__setattr__(s, "_force", strength)
+        return s
+
+    from stream_clipper.live import spikes as spk
+
+    orig = spk.Spike.strength
+    spk.Spike.strength = property(lambda self: getattr(self, "_force", 0))
+    try:
+        p = ClipPlanner(ClipCfg(), 61, 90, cooldown=90, min_strength=14, max_per_hour=2)
+        assert p.on_spike(sp(1000, 10))[0] == "weak"
+        assert p.on_spike(sp(1200, 15))[0] == "new"
+        assert p.on_spike(sp(1400, 15))[0] == "new"
+        assert p.on_spike(sp(1600, 15))[0] == "over_budget"   # 3rd in an hour
+        assert p.on_spike(sp(1800, 30))[0] == "new"           # huge moment still passes
+        assert p.on_spike(sp(1800 + 3700, 15))[0] == "new"    # budget refills after an hour
+    finally:
+        spk.Spike.strength = orig

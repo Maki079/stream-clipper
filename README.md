@@ -248,6 +248,21 @@ log shows the current numbers: `docker compose logs clipper | grep "chat stats"`
 
 `min_messages` / `min_unique_chatters` are only a floor for quiet chats; the average does the real work.
 
+**Quality gate - only interesting moments become clips.** Fast chat alone isn't enough: polls ("yes", "1"),
+numbers ("67", "5-13"), greetings, `!commands` and "vape break" chatter are ignored by default
+(`ignore_patterns`), and every spike gets a strength score:
+
+```
+strength = (min(z, 30) + min(ratio, 15)) × (0.5 + reaction_share)
+```
+
+`reaction_share` = share of messages at the peak that are real reactions (LOL, LMAO, KEKW, ???, OOOO, W, "no way",
+"clip it", 💀, 😂 ...). A spike needs `strength ≥ min_strength` (14) to start a clip, and each source makes at most
+`max_clips_per_hour` (4) clips - over that budget only huge moments (`≥ 2 × min_strength`) get through. On a
+2.7 h Jynxzi chat log this went from 26 clips to 5. Every spike is logged with its strength and top messages:
+`docker compose logs clipper | grep '"spike"'` (kind `new` = clip, `weak`, `over_budget`, `extended`).
+Fewer/better clips → raise `min_strength`; more → lower it.
+
 Measure instead of guessing:
 ```bash
 docker compose run --rm clipper record-chat --source kaicenat --minutes 60 --out /data/chat-kai.jsonl

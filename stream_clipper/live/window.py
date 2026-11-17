@@ -54,8 +54,11 @@ class ClipPlanner:
     A clip is ready once wall clock passes its end + margin (ready()).
     """
 
-    def __init__(self, clip: ClipCfg, min_len: float, max_len: float, cooldown: float, margin: float = 8.0):
+    def __init__(self, clip: ClipCfg, min_len: float, max_len: float, cooldown: float, margin: float = 8.0,
+                 min_strength: float = 0.0, max_per_hour: int = 0):
         self.clip, self.min_len, self.max_len, self.cooldown, self.margin = clip, min_len, max_len, cooldown, margin
+        self.min_strength, self.max_per_hour = min_strength, max_per_hour
+        self._started: list[float] = []  # moments of clips started (for the hourly budget)
         self.open: PlannedClip | None = None
         self.last_end: float = float("-inf")
         self.last_moment: float = float("-inf")
@@ -77,6 +80,13 @@ class ClipPlanner:
                 self.last_moment = moment
                 return "extended", o
             return "dropped", None
+        # quality gate + hourly budget, only for spikes that would start a new clip
+        if s.strength < self.min_strength:
+            return "weak", None
+        self._started = [t for t in self._started if t > moment - 3600]
+        if self.max_per_hour and len(self._started) >= self.max_per_hour and s.strength < 2 * self.min_strength:
+            return "over_budget", None
+        self._started.append(moment)
         if o is not None:
             self._close(o)
         new = PlannedClip(max(start, self.last_end), end, [s])

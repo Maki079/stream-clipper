@@ -42,7 +42,8 @@ class LiveRunner:
         self.min_len, self.max_len = length_limits(src.clip, campaigns)
         self.detector = SpikeDetector(src.spike, time.time(), max_spike_seconds=src.clip.max_seconds)
         self.planner = ClipPlanner(src.clip, self.min_len, self.max_len, src.spike.cooldown_seconds,
-                                   margin=cfg.g.buffer.segment_seconds + 5)
+                                   margin=cfg.g.buffer.segment_seconds + 5, min_strength=src.spike.min_strength,
+                                   max_per_hour=src.spike.max_clips_per_hour)
         self.recorder = Recorder(name, src, cfg, ctx.buffer_dir(name), pinned_from=lambda: ctx.store.pending_live_start(name))
         self.recorder.on_live_change = self._on_live_change
         self.recent: deque[ChatMessage] = deque()  # last few minutes, for sidecar "top chat"
@@ -74,7 +75,8 @@ class LiveRunner:
         for c in clips:
             cid = clip_id_for(self.name, c.start)
             spikes = [{"start": s.start, "end": s.end, "peak_messages": s.peak_messages, "peak_unique": s.peak_unique,
-                       "peak_z": round(s.peak_z, 2), "baseline": round(s.baseline_messages, 2)} for s in c.spikes]
+                       "peak_z": round(s.peak_z, 2), "baseline": round(s.baseline_messages, 2),
+                       "reaction_share": round(s.reaction_share, 2), "strength": s.strength} for s in c.spikes]
             meta = {"spikes": spikes, "top_chat": top_chat(list(self.recent), c.start, c.end + 30),
                     "chat_delay_seconds": self.src.clip.chat_delay_seconds}
             self.ctx.store.add_clip(cid, self.name, "live", c.start, c.end, c.score, list(self.src.campaigns), meta)
@@ -103,7 +105,9 @@ class LiveRunner:
                 self.stats["spikes"] += 1
                 kind, clip = self.planner.on_spike(spike)
                 L.info("spike", extra={"source": self.name, "kind": kind, "peak_messages": spike.peak_messages,
-                                       "z": round(spike.peak_z, 1), "baseline": round(spike.baseline_messages, 1)})
+                                       "z": round(spike.peak_z, 1), "baseline": round(spike.baseline_messages, 1),
+                                       "strength": spike.strength, "reaction": round(spike.reaction_share, 2),
+                                       "top": spike.top_messages[:3]})
                 if clip:
                     self._pin_open(clip)
                 if kind == "new":

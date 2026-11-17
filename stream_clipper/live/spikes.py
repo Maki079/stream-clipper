@@ -20,6 +20,14 @@ from dataclasses import dataclass, field
 from ..config import SpikeCfg
 
 
+# Messages that show chat is *reacting* to something (laughing, shocked, hyped) - as opposed to
+# polls, numbers, greetings, commands or "vape break" chatter that also make chat fast but are boring.
+REACTION_RE = re.compile(
+    r"(?i)(\b(l+o+l+|lul\w*|lm+f?a+o+|kek\w*|omegalul|icant|xd+|a?ha(ha)+h?|ded|dead|wtf|omg|no+ ?wa+y+|holy|"
+    r"huh+|wha+t+|bro+|na+h+|insane|crazy|wo+w+|shee+sh|clip( ?it)?|pog\w*|monka\w*|ome\d*|\w*laugh\w*|sped|"
+    r"o{3,}|w{2,}|w|nooo+|yoo+|gg|aware|jesus|bruh+|son|deadass|scream\w*|💀+|😂+|🤣+|😭+)\b|\?{2,}|💀|😂|🤣|😭)")
+
+
 @dataclass
 class ChatMessage:
     ts: float          # our receive time (epoch seconds)
@@ -37,11 +45,17 @@ class Spike:
     peak_ratio: float
     baseline_messages: float
     top_messages: list[tuple[str, int]] = field(default_factory=list)
+    reaction_share: float = 0.5   # share of reaction messages (LOL, ???, OOOO, ...) at the peak
 
     @property
     def strength(self) -> float:
-        """Ranking score: mostly z-score, bounded so huge chats don't dwarf everything."""
-        return round(min(self.peak_z, 50.0) + min(self.peak_ratio, 20.0), 2)
+        """Quality score: how far chat jumped above normal, weighted by whether it is a real reaction.
+
+        (min(z, 30) + min(ratio, 15)) x (0.5 + reaction_share)
+        A burst of polls / numbers / "vape break" scores half; a wall of LOL / ??? / OOOO scores 1.5x.
+        """
+        base = min(self.peak_z, 30.0) + min(self.peak_ratio, 15.0)
+        return round(base * (0.5 + self.reaction_share), 2)
 
 
 @dataclass
@@ -52,8 +66,16 @@ class _Sample:
     in_spike: bool
 
 
+_INVISIBLE = re.compile("[\u034f\u200b-\u200d\u2060\ufeff\U000e0000-\U000e007f]")
+
+
+def clean(text: str) -> str:
+    """Drop the invisible characters chatters add to dodge Twitch's duplicate-message filter."""
+    return _INVISIBLE.sub("", text).strip()
+
+
 def normalize(text: str) -> str:
-    return re.sub(r"\s+", " ", text.strip().lower())
+    return re.sub(r"\s+", " ", clean(text).lower())
 
 
 class SpikeDetector:
@@ -75,7 +97,8 @@ class SpikeDetector:
     def accepts(self, m: ChatMessage) -> bool:
         if m.user.lower() in self._ignore_users:
             return False
-        return not any(p.search(m.text) for p in self._patterns)
+        text = clean(m.text)
+        return not any(p.search(text) for p in self._patterns)
 
     def add(self, m: ChatMessage) -> None:
         if not self.accepts(m):
@@ -89,12 +112,17 @@ class SpikeDetector:
 
     # ------------------------------------------------------------- measures
     def _measure(self, now: float) -> tuple[int, int, list[tuple[str, int]]]:
+        n, u, top, _ = self._measure_full(now)
+        return n, u, top
+
+    def _measure_full(self, now: float) -> tuple[int, int, list[tuple[str, int]], int]:
         lo = now - self.cfg.window_seconds
         while self._win and self._win[0][0] < lo:
             self._win.popleft()
         seen: set[tuple[str, str]] = set()
         users: set[str] = set()
         texts: Counter[str] = Counter()
+        reactions = 0
         for ts, user, text in self._win:
             if ts > now:
                 continue
@@ -103,7 +131,9 @@ class SpikeDetector:
             seen.add((user, text))
             users.add(user)
             texts[text] += 1
-        return len(seen), len(users), texts.most_common(5)
+            if REACTION_RE.search(text):
+                reactions += 1
+        return len(seen), len(users), texts.most_common(5), reactions
 
     def baseline(self, now: float) -> tuple[float, float, float, float]:
         """(mean_msgs, std_msgs, mean_unique, std_unique) over clean history."""
@@ -126,7 +156,8 @@ class SpikeDetector:
     # ----------------------------------------------------------------- tick
     def tick(self, now: float) -> Spike | None:
         """Advance to `now`. Returns a Spike when one has just finished."""
-        msgs, uniq, top = self._measure(now)
+        msgs, uniq, top, reactions = self._measure_full(now)
+        share = reactions / msgs if msgs else 0.0
         mm, sm, mu, su = self.baseline(now)
         warm = now - self.started_at >= self.cfg.warmup_seconds
         t_m, z_m, r_m = self._triggered(msgs, mm, sm, self.cfg.min_messages)
@@ -143,11 +174,11 @@ class SpikeDetector:
         finished: Spike | None = None
         if firing:
             if self._active is None:
-                self._active = Spike(now, now, msgs, uniq, z_m, r_m if math.isfinite(r_m) else 99.0, mm, top)
+                self._active = Spike(now, now, msgs, uniq, z_m, r_m if math.isfinite(r_m) else 99.0, mm, top, share)
             a = self._active
             a.end = now
             if msgs > a.peak_messages:
-                a.peak_messages, a.top_messages = msgs, top
+                a.peak_messages, a.top_messages, a.reaction_share = msgs, top, share
             a.peak_unique = max(a.peak_unique, uniq)
             a.peak_z = max(a.peak_z, z_m)
             a.peak_ratio = max(a.peak_ratio, r_m if math.isfinite(r_m) else 99.0)

@@ -102,10 +102,8 @@ sources:
       z_threshold: 3.0            # ...and stand out from its normal noise
       min_messages: 60            # only a sanity floor; the average does the work
       min_unique_chatters: 30
-      ignore_patterns:
-        - "^(\\S+)( \\1)+$"       # same emote/word repeated
-        - "(?i)hype train"
-        - "^!\\w+"                # bot commands
+      min_strength: 14            # weak / non-reaction spikes don't make clips (README section 7)
+      max_clips_per_hour: 4       # more only for really big moments (>= 2x min_strength)
 
   lacy:
     enabled: false                # set platform + url, then enable

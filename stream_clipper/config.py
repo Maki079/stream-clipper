@@ -246,7 +246,15 @@ class SpikeCfg(Strict):
     metric: Literal["messages", "unique", "either", "both"] = "either"
     warmup_seconds: int = Field(180, ge=0)
     cooldown_seconds: int = Field(90, ge=0)
-    ignore_patterns: list[str] = [r"^!\w+"]  # bot commands
+    min_strength: float = Field(14.0, ge=0, description="spikes weaker than this don't start a clip (see Spike.strength)")
+    max_clips_per_hour: int = Field(4, ge=0, description="0 = unlimited; over budget only spikes >= 2x min_strength pass")
+    ignore_patterns: list[str] = [
+        r"^!\w+",                                     # bot commands
+        r"(?i)hype train",
+        r"^[\d\s\-:/.,]+$",                           # numbers only: polls, scores, "67"
+        r"(?i)^(yes|no|y|n|rt|stare|first|1st|hi|hello|hey)\W*$",  # poll answers / greetings / filler
+        r"(?i)\b(vape|bong|goon|fent|piss|pee|bathroom|smoke|food)\s*break\b",  # streamer is AFK
+    ]
     ignore_users: list[str] = ["nightbot", "streamelements", "streamlabs", "moobot", "fossabot", "wizebot", "sery_bot"]
 
     @field_validator("ignore_patterns")
