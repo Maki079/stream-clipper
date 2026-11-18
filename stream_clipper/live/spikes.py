@@ -140,9 +140,13 @@ class SpikeDetector:
         lo = now - self.cfg.baseline_seconds
         while self._hist and self._hist[0].ts < lo:
             self._hist.popleft()
-        clean = [s for s in self._hist if not s.in_spike]
-        if not clean:
+        if not self._hist:
             return 0.0, 1.0, 0.0, 1.0
+        clean = [s for s in self._hist if not s.in_spike]
+        if len(clean) < max(30, len(self._hist) // 3):
+            # chat has been "spiking" for most of the window = this IS the new normal (stream got bigger/hyped).
+            # Excluding it would leave an empty/stale baseline -> average 0 -> everything fires forever.
+            clean = list(self._hist)
         return (*_mean_std([s.messages for s in clean]), *_mean_std([s.unique for s in clean]))
 
     def threshold(self, mean: float, std: float, floor: float) -> float:

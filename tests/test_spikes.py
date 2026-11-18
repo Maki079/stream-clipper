@@ -224,3 +224,13 @@ def test_planner_quality_gate_and_hourly_budget():
         assert p.on_spike(sp(1800 + 3700, 15))[0] == "new"    # budget refills after an hour
     finally:
         spk.Spike.strength = orig
+
+
+def test_baseline_recovers_after_back_to_back_spikes():
+    """Regression (jasontheween): bursts close together left no 'clean' samples in the 5-min baseline ->
+    average 0 -> threshold = floor -> normal chat fired forever. The baseline must recover."""
+    # 3 msg/s, then the stream gets hyped for 6 min (8/s, one long spike after another), then 5 msg/s for good
+    rate = lambda t: 3.0 if t < 300 else (8.0 if t < 660 else 5.0)
+    spikes = simulate(SpikeCfg(min_messages=15), rate, duration=1500)
+    assert not [s for s in spikes if s.start > 900], [(round(s.start), s.peak_messages, round(s.baseline_messages, 1)) for s in spikes]
+    assert all(s.baseline_messages > 5 for s in spikes if s.start > 400)
