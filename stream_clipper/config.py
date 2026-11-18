@@ -148,7 +148,8 @@ class NotificationsCfg(Strict):
 class LlmCfg(Strict):
     enabled: bool = False
     ollama_url: str = "http://ollama:11434"
-    model: str = "qwen2.5:7b-instruct"
+    model: str = "qwen3.5:4b"
+    think: bool = Field(False, description="reasoning mode of thinking models (qwen3.x); slow on CPU")
     timeout_seconds: int = Field(300, ge=10)
     top_k_candidates: int = Field(15, ge=1, description="only this many best heuristic windows are sent to the LLM")
     weight: float = Field(1.0, ge=0)

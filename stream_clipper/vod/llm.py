@@ -31,7 +31,7 @@ def rate(cfg: LlmCfg, text: str, creator: str = "") -> tuple[float, str] | None:
         return None
     try:
         r = httpx.post(f"{cfg.ollama_url.rstrip('/')}/api/generate", timeout=cfg.timeout_seconds, json={
-            "model": cfg.model, "prompt": PROMPT.format(creator=creator, text=text[:4000]), "stream": False,
+            "model": cfg.model, "prompt": PROMPT.format(creator=creator, text=text[:4000]), "stream": False, "think": cfg.think,
             "format": "json", "options": {"temperature": 0.2, "num_predict": 80}})
         r.raise_for_status()
         d = json.loads(r.json().get("response", "{}"))
@@ -169,7 +169,7 @@ def judge_live(cfg: LlmCfg, segments: list[dict], *, creator: str, moments: list
                                  min_len=min_len, max_len=max_len)
     try:
         r = httpx.post(f"{cfg.ollama_url.rstrip('/')}/api/generate", timeout=cfg.timeout_seconds, json={
-            "model": cfg.model, "prompt": prompt, "stream": False, "format": "json", "keep_alive": "30m",
+            "model": cfg.model, "prompt": prompt, "stream": False, "think": cfg.think, "format": "json", "keep_alive": "30m",
             "options": {"temperature": 0.1, "num_predict": 300, "num_ctx": 4096}})
         r.raise_for_status()
         d = json.loads(r.json().get("response", "{}"))

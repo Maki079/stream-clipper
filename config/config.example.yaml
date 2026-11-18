@@ -52,7 +52,8 @@ global:
   llm:                            # local Ollama LLM (README section 3c); false = no LLM at all
     enabled: true
     ollama_url: http://ollama:11434
-    model: qwen2.5:7b-instruct
+    model: qwen3.5:4b              # pulled automatically on first start (~3 GB)
+    think: false                  # thinking mode is too slow on CPU
     live_judge: true              # rate every live clip from transcript + chat before rendering
     min_score: 5                  # 0-10; below this the clip is skipped (not rendered, not sent)
     keep_strength: 28             # ...unless the chat spike is this strong (often a visual moment)

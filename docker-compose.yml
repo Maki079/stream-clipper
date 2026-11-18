@@ -26,7 +26,7 @@ services:
       options: {max-size: "50m", max-file: "5"}
 
   # Local LLM (free, offline): rates live clips, picks the cut, writes the hook title (README section 3c).
-  # The model (global.llm.model, ~5 GB) is pulled automatically on first start into models/ollama.
+  # The model (global.llm.model, ~3 GB) is pulled automatically on first start into models/ollama.
   # Without it (global.llm.enabled: false) clips are rendered exactly as planned.
   ollama:
     image: ollama/ollama:latest

@@ -97,7 +97,7 @@ Validated at startup; unknown keys and bad values are reported as `path: problem
 | `delivery.delete_work_files` | true | remove temp files after delivery |
 | `notifications.backend` | none | `telegram` (clips as videos) or `ntfy` (see §5) |
 | `notifications.top_n` / `batch_seconds` / `daily_summary_time` | 3 / 300 / "20:00" | |
-| `llm.enabled` / `ollama_url` / `model` | false / http://ollama:11434 / qwen2.5:7b-instruct | local LLM judge + hook (§3c) |
+| `llm.enabled` / `ollama_url` / `model` | false / http://ollama:11434 / qwen3.5:4b | local LLM judge + hook (§3c) |
 
 ### `campaigns.<NAME>`
 | key | meaning |
@@ -163,7 +163,7 @@ Subtitles are burned in after the effect, so they never move. The planned zooms 
 
 ## 3c. LLM judge for live clips (Ollama, free, offline)
 
-The `ollama` service in `docker-compose.yml` runs `qwen2.5:7b-instruct` on the CPU. The model (~5 GB) is pulled
+The `ollama` service in `docker-compose.yml` runs `qwen3.5:4b` on the CPU (thinking mode off). The model (~3 GB) is pulled
 automatically into `models/ollama/` on the first start. For every live clip, after Whisper and **before** rendering:
 
 1. **Score 0–10.** The LLM reads the timestamped transcript, the chat-spike time and the most repeated chat messages.

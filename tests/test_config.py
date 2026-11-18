@@ -50,7 +50,7 @@ def test_typo_key_rejected(raw):
 
 
 def test_placeholder_platform_requires_disabled(raw):
-    raw["sources"]["lacy"]["enabled"] = True
+    raw["sources"]["lacy"].update(enabled=True, platform="FILL_ME", url="FILL_ME")
     assert "platform is FILL_ME" in _err(raw)
 
 
