@@ -62,6 +62,19 @@ def _continuation(conts: list[dict]) -> tuple[str | None, float]:
     return None, 5.0
 
 
+def all_messages_continuation(renderer: dict) -> str | None:
+    """The default continuation is "Top chat" (YouTube filters it to ~1/4 of messages). The header's view
+    selector holds the "Live chat" (all messages) one - spike detection needs the full rate."""
+    try:
+        items = renderer["header"]["liveChatHeaderRenderer"]["viewSelector"]["sortFilterSubMenuRenderer"]["subMenuItems"]
+    except (KeyError, TypeError):
+        return None
+    for it in items:
+        if str(it.get("title", "")).lower().startswith("live chat"):
+            return it.get("continuation", {}).get("reloadContinuationData", {}).get("continuation")
+    return items[-1].get("continuation", {}).get("reloadContinuationData", {}).get("continuation") if len(items) > 1 else None
+
+
 def parse_actions(actions: list[dict], ts: float) -> list[ChatMessage]:
     out = []
     for a in actions or []:
@@ -90,6 +103,7 @@ class YouTubeInnertubeChat(ChatSource):
         data, key, ver = extract_initial(page.text)
         renderer = data.get("contents", {}).get("liveChatRenderer", {})
         cont, wait = _continuation(renderer.get("continuations", []))
+        cont = all_messages_continuation(renderer) or cont
         if not cont:
             raise NotLive("no chat continuation (stream ended or chat off)")
         body = {"context": {"client": {"clientName": "WEB", "clientVersion": ver, "hl": "en"}}}

@@ -159,3 +159,15 @@ def test_recorder_restarts_when_timeline_drifts(tmp_path, monkeypatch):
     monkeypatch.setattr(rec_mod.asyncio, "sleep", lambda s: real_sleep(0))
     asyncio.run(asyncio.wait_for(r._watch_live("s1"), 5))
     assert p.terminated and r.live
+
+
+def test_youtube_chat_prefers_live_chat_over_top_chat():
+    from stream_clipper.live.chat.youtube import all_messages_continuation
+
+    def item(title, cont, sel):
+        return {"title": title, "selected": sel, "continuation": {"reloadContinuationData": {"continuation": cont}}}
+
+    r = {"header": {"liveChatHeaderRenderer": {"viewSelector": {"sortFilterSubMenuRenderer": {
+        "subMenuItems": [item("Top chat", "TOP", True), item("Live chat", "ALL", False)]}}}}}
+    assert all_messages_continuation(r) == "ALL"
+    assert all_messages_continuation({}) is None
