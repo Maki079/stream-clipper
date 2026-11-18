@@ -144,6 +144,7 @@ sources:
     spike: {multiplier: 2.0, z_threshold: 3.0, min_messages: 40, min_unique_chatters: 20, min_strength: 14, max_clips_per_hour: 4}
 
   kai_youtube_vods:
+    enabled: false                # VOD clips off (owner: only live clips on Telegram)
     mode: vod
     platform: youtube
     url: https://www.youtube.com/@KaiCenat/videos
