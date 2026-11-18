@@ -110,6 +110,11 @@ class Supervisor:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, self.stop.set)
         self.pool.start()
+        if self.cfg.g.llm.enabled:
+            import threading
+
+            from .vod import llm as llm_mod
+            threading.Thread(target=llm_mod.ensure_model, args=(self.cfg.g.llm,), daemon=True, name="llm-pull").start()
         tasks = [asyncio.create_task(r.run(), name=f"live-{r.name}") for r in self.runners]
         tasks += [asyncio.create_task(self.vod_watch_loop()), asyncio.create_task(self.notify_loop()),
                   asyncio.create_task(self.maintenance_loop())]

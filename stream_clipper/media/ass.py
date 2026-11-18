@@ -106,7 +106,15 @@ def _render_chunk(texts: list[str], max_chars: int, active: int | None, hl: str)
     return "".join(parts)
 
 
-def build_ass(words: list[Word], out: OutputCfg, layout: LayoutCfg, *, font: str | None = None) -> str:
+def hook_y(layout: LayoutCfg, height: int = 1920, width: int = 1080) -> int:
+    """Centre of the hook title: the empty band above the picture (blur_fit), else the upper part."""
+    if layout.type == "blur_fit":
+        return max(140, (height - width * 9 // 16) // 4)
+    return int(height * 0.09)
+
+
+def build_ass(words: list[Word], out: OutputCfg, layout: LayoutCfg, *, font: str | None = None,
+              hook: str | None = None, hook_seconds: float = 3.0) -> str:
     font = font or out.font
     y = subtitle_center_y(layout, out.height, out.width)
     x = out.width // 2
@@ -122,6 +130,7 @@ YCbCr Matrix: TV.709
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,{font},{out.font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,7,3,5,60,60,0,1
+Style: Hook,{font},{round(out.font_size * 0.8)},&H00000000,&H00000000,{hl.rstrip('&')},&H00000000,0,0,0,0,100,100,0,0,3,18,0,5,80,80,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -149,6 +158,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if we <= ws:
                 continue
             lines.append(f"Dialogue: 0,{_ts(ws)},{_ts(we)},Default,,0,0,0,,{pos}{_render_chunk(texts, out.max_chars_per_line, wi, hl)}")
+    if hook and hook.strip() and hook_seconds > 0:
+        text = _escape(hook.strip().upper())
+        a, b = split_lines(text) if len(text) > 22 else (text, "")
+        text = a + ("\\N" + b if b else "")
+        hx, hy = out.width // 2, hook_y(layout, out.height, out.width)
+        lines.append(f"Dialogue: 1,{_ts(0)},{_ts(hook_seconds)},Hook,,0,0,0,,"
+                     f"{{\\an5\\pos({hx},{hy})\\fad(120,250)\\t(0,150,\\fscx108\\fscy108)\\t(150,300,\\fscx100\\fscy100)}}{text}")
     return header + "\n".join(lines) + "\n"
 
 

@@ -92,3 +92,9 @@ def test_clip_header_shows_chat_ratio():
     c = _clip(2, 7)
     c["meta"]["spikes"] = [{"peak_messages": 400, "baseline": 100}]
     assert "4.0x average" in notify.clip_header(c)
+
+
+def test_clip_header_shows_llm_verdict():
+    c = _clip(2, 7)
+    c["meta"]["llm"] = {"score": 7.0, "reason": "rage <quit> after losing"}
+    assert "🤖 7/10 · rage &lt;quit&gt; after losing" in notify.clip_header(c)

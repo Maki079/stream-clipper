@@ -149,9 +149,17 @@ class LlmCfg(Strict):
     enabled: bool = False
     ollama_url: str = "http://ollama:11434"
     model: str = "qwen2.5:7b-instruct"
-    timeout_seconds: int = Field(180, ge=10)
+    timeout_seconds: int = Field(300, ge=10)
     top_k_candidates: int = Field(15, ge=1, description="only this many best heuristic windows are sent to the LLM")
     weight: float = Field(1.0, ge=0)
+    # live clips: the LLM reads transcript + chat before rendering (README section 3c)
+    live_judge: bool = Field(True, description="rate live clips; below min_score they are not rendered")
+    min_score: float = Field(5.0, ge=0, le=10)
+    keep_strength: float = Field(28.0, ge=0, description="chat spikes this strong are never skipped (often visual)")
+    trim: bool = Field(True, description="let the LLM choose start/end (setup -> payoff) inside extra context")
+    context_seconds: float = Field(20.0, ge=0, le=60, description="extra footage cut before/after for trimming")
+    hook_overlay: bool = Field(True, description="burn the hook title on top of the first seconds")
+    hook_seconds: float = Field(3.0, ge=0, le=10)
 
 
 class GlobalCfg(Strict):

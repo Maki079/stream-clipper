@@ -18,7 +18,8 @@ from .live import buffer
 from .media import motion
 from .media import render as media
 from .media import whisper
-from .media.ass import Word, build_ass
+from .live.window import length_limits
+from .media.ass import build_ass, words_in_range
 from .queue import PRIORITY_LIVE, PRIORITY_VOD, PermanentError
 from .vod import analyze, ingest
 from .vod import llm as llm_mod
@@ -52,24 +53,31 @@ def _prio(clip: dict) -> int:
 # ---------------------------------------------------------------------- live
 
 
+def _llm_context(ctx: Context) -> float:
+    llm = ctx.cfg.g.llm
+    return llm.context_seconds if (llm.enabled and llm.live_judge and llm.trim) else 0.0
+
+
 def handle_cut(ctx: Context, p: dict) -> None:
     clip = _clip(ctx, p["clip_id"])
     if clip["status"] != "pending":
         return
     start, end = clip["start_ts"], clip["end_ts"]
-    segs = buffer.select(buffer.list_segments(ctx.buffer_dir(clip["source"])), start, end)
-    complete, gaps = buffer.coverage(segs, start, end)
-    if not complete and not p.get("final") and time.time() < end + 180:
+    pad = _llm_context(ctx)  # extra footage around the window so the LLM can choose the cut
+    segs = buffer.select(buffer.list_segments(ctx.buffer_dir(clip["source"])), start - pad, end + pad)
+    complete, gaps = buffer.coverage(segs, start - pad, end + pad)
+    if not complete and not p.get("final") and time.time() < end + pad + 180:
         raise NotReady(f"buffer does not cover clip yet (gaps {gaps})")
     if not segs:
         ctx.store.update_clip(clip["id"], status="failed", meta_update={"error": "no footage in buffer"})
         raise PermanentError("no buffer segments for clip window (buffer pruned or stream down)")
     raw = media.concat_segments([s.path for s in segs], ctx.work_dir(clip["id"]) / "raw.ts")
-    offset = max(0.0, start - segs[0].start)
-    duration = min(end, segs[-1].end) - max(start, segs[0].start)
+    raw_start, raw_end = segs[0].start, segs[-1].end
+    offset = max(0.0, start - raw_start)
+    duration = min(end, raw_end) - max(start, raw_start)
     ctx.store.update_clip(clip["id"], status="cut", meta_update={
         "raw": str(raw), "raw_is_temp": True, "offset": round(offset, 3), "duration": round(duration, 3),
-        "gaps": [[round(a, 1), round(b, 1)] for a, b in gaps]})
+        "raw_len": round(raw_end - raw_start, 3), "gaps": [[round(a, 1), round(b, 1)] for a, b in gaps]})
     ctx.queue.enqueue("render", {"clip_id": clip["id"]}, priority=PRIORITY_LIVE, dedupe_key=f"render:{clip['id']}")
 
 
@@ -90,6 +98,27 @@ def _chat_moments(clip: dict, offset: float) -> list[float]:
     return out
 
 
+def _clip_campaigns(ctx: Context, clip: dict) -> list:
+    return [ctx.cfg.campaigns[n] for n in clip["campaigns"] if n in ctx.cfg.campaigns]
+
+
+def _judge(ctx: Context, clip: dict, src, tr: dict, offset: float, duration: float, total: float):
+    """LLM verdict for a live clip (transcript `tr` is in raw-footage time). None = render as planned."""
+    llm = ctx.cfg.g.llm
+    if not (llm.enabled and llm.live_judge and clip["mode"] == "live"):
+        return None
+    camps = _clip_campaigns(ctx, clip)
+    min_len, max_len = length_limits(src.clip, camps)
+    moments = [round(offset + t, 1) for t in _chat_moments(clip, offset)]
+    v = llm_mod.judge_live(llm, tr["segments"], creator=camps[0].creator_name if camps else clip["source"],
+                           moments=moments, chat=clip["meta"].get("top_chat", []), total=total,
+                           min_len=min_len, max_len=max(max_len, min_len), default=(offset, offset + duration))
+    if v is not None:
+        L.info("llm verdict", extra={"clip_id": clip["id"], "score": v.score, "reason": v.reason, "hook": v.hook,
+                                     "cut": [v.start, v.end], "trimmed": v.trimmed})
+    return v
+
+
 def handle_render(ctx: Context, p: dict) -> None:
     clip = _clip(ctx, p["clip_id"])
     if clip["status"] not in ("cut",):
@@ -100,19 +129,51 @@ def handle_render(ctx: Context, p: dict) -> None:
     if not raw.exists():
         raise PermanentError(f"source footage missing: {raw}")
     work = ctx.work_dir(clip["id"])
+    llm = ctx.cfg.g.llm
+    judging = llm.enabled and llm.live_judge and clip["mode"] == "live"
 
-    # 1) transcribe just this clip with the subtitle model
-    wav = media.extract_audio(raw, work / "audio.wav", offset, duration)
-    tr = whisper.transcribe(ctx, wav, language=src.language)
+    # 1) transcribe (live + LLM: the whole cut incl. extra context, so the LLM can move the cut)
+    t_base = 0.0 if judging else offset
+    t_len = float(m.get("raw_len") or offset + duration) if judging else duration
+    wav_all = media.extract_audio(raw, work / "audio_all.wav", t_base, t_len)
+    tr = whisper.transcribe(ctx, wav_all, language=src.language)
+    wav_all.unlink(missing_ok=True)
     (work / "transcript.json").write_text(json.dumps(tr, ensure_ascii=False))
-    words = [Word(w["start"], w["end"], w["word"]) for s in tr["segments"] for w in s["words"]]
+    chat_moments = _chat_moments(clip, offset)  # relative to the planned start
 
-    # 2) subtitles + render
+    # 2) LLM: score (skip boring ones before spending render time), cut, hook
+    verdict = _judge(ctx, clip, src, tr, offset, duration, t_len) if judging else None
+    llm_meta = {}
+    if verdict is not None:
+        llm_meta = {"llm": {"score": verdict.score, "reason": verdict.reason, "hook": verdict.hook,
+                            "cut": [verdict.start, verdict.end], "trimmed": verdict.trimmed}}
+        if verdict.score < llm.min_score and float(clip.get("score") or 0) < llm.keep_strength:
+            ctx.store.update_clip(clip["id"], status="skipped", meta_update=llm_meta | {
+                "transcript_excerpt": " ".join(s["text"] for s in tr["segments"])[:1500]})
+            if m.get("raw_is_temp"):
+                raw.unlink(missing_ok=True)
+            L.info("clip skipped by llm", extra={"clip_id": clip["id"], "score": verdict.score, "reason": verdict.reason})
+            return
+        chat_moments = [round(t + offset - verdict.start, 2) for t in chat_moments]
+        offset, duration = verdict.start, verdict.end - verdict.start
+    # transcript in clip time
+    a = offset - t_base
+    words = words_in_range(tr["segments"], a, a + duration)
+    segs_clip = [s | {"start": s["start"] - a, "end": s["end"] - a,
+                      "words": [w | {"start": w["start"] - a, "end": w["end"] - a} for w in s.get("words", [])]}
+                 for s in tr["segments"] if s["end"] > a and s["start"] < a + duration]
+    tr = tr | {"segments": segs_clip}
+
+    hook = m.get("hook") or (verdict.hook if verdict is not None else None)
+
+    # 3) subtitles (+ hook title) + render
     ass = work / "subs.ass"
-    ass.write_text(build_ass(words, ctx.cfg.g.output, src.layout))
+    show_hook = hook if (llm.enabled and llm.hook_overlay and clip["mode"] == "live") else None
+    ass.write_text(build_ass(words, ctx.cfg.g.output, src.layout, hook=show_hook, hook_seconds=llm.hook_seconds))
     out = work / f"{clip['id']}.mp4"
+    wav = media.extract_audio(raw, work / "audio.wav", offset, duration)
     effects, zooms = motion.plan(wav, duration, ctx.cfg.g.output.motion, src.layout, ctx.cfg.g.output,
-                                 chat_moments=_chat_moments(clip, offset))
+                                 chat_moments=chat_moments)
     media.render(raw, out, start=offset, duration=duration, layout=src.layout, cfg=ctx.cfg.g.output, ass_path=ass,
                  threads=ctx.threads, fonts_dir=_fonts_dir(ctx), effects=effects)
     info = media.probe(out)
@@ -137,8 +198,7 @@ def handle_render(ctx: Context, p: dict) -> None:
     if tr["language"] == "en":
         kws = src.vod.keywords
         quote = vtext.quotable_line(tr["segments"], 0, duration, kws)
-    hook = m.get("hook")
-    if not hook and ctx.cfg.g.llm.enabled:
+    if not hook and ctx.cfg.g.llm.enabled and verdict is None:
         first = ctx.cfg.campaigns.get(tagged[0]) if tagged else None
         hook = llm_mod.hook(ctx.cfg.g.llm, transcript_text, first.creator_name if first else "")
     caps = {}
@@ -152,7 +212,7 @@ def handle_render(ctx: Context, p: dict) -> None:
     ctx.store.update_clip(clip["id"], status="rendered", campaigns=tagged, meta_update={
         "video": str(out), "duration": round(real_len, 2), "language": tr["language"], "quote": quote, "hook": hook,
         "captions": caps, "rejected_campaigns": rejected, "suggested_campaigns": suggested,
-        "transcript_excerpt": transcript_text[:1500], "zooms": zooms})
+        "transcript_excerpt": transcript_text[:1500], "zooms": zooms, "render_offset": round(offset, 3)} | llm_meta)
     wav.unlink(missing_ok=True)
     if m.get("raw_is_temp"):
         raw.unlink(missing_ok=True)  # only our own cut piece, never a user/VOD file

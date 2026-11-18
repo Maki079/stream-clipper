@@ -141,6 +141,9 @@ def clip_header(c: dict) -> str:
         best = max(sp, key=lambda s: s.get("peak_messages", 0))
         if best.get("baseline"):
             lines.append(f"💬 chat {best['peak_messages']} msgs/10s = {best['peak_messages'] / max(best['baseline'], 1):.1f}x average")
+    lj = m.get("llm") or {}
+    if lj.get("score") is not None:
+        lines.append(f"🤖 {lj['score']:.0f}/10 · {html.escape(str(lj.get('reason', '')))}")
     if m.get("suggested_campaigns"):
         lines.append("maybe also: " + html.escape(", ".join(m["suggested_campaigns"])))
     return "\n".join(lines)

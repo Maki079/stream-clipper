@@ -4,7 +4,8 @@ services:
     image: stream-clipper:latest
     container_name: stream-clipper
     restart: unless-stopped
-    command: ["run", "--record-chat"]   # chat logs in data/chatlogs/ for tuning; remove the flag later
+    command: ["run", "--record-chat"]
+    depends_on: [ollama]   # chat logs in data/chatlogs/ for tuning; remove the flag later
     stop_grace_period: 60s          # running renders get time to finish; the rest is requeued
     environment:
       - TZ=Europe/Bratislava
@@ -24,12 +25,16 @@ services:
       driver: json-file
       options: {max-size: "50m", max-file: "5"}
 
-  # Optional local LLM for hook titles / VOD rating: docker compose --profile llm up -d
-  # then: docker compose exec ollama ollama pull qwen2.5:7b-instruct  and set global.llm.enabled: true
+  # Local LLM (free, offline): rates live clips, picks the cut, writes the hook title (README section 3c).
+  # The model (global.llm.model, ~5 GB) is pulled automatically on first start into models/ollama.
+  # Without it (global.llm.enabled: false) clips are rendered exactly as planned.
   ollama:
     image: ollama/ollama:latest
-    profiles: ["llm"]
+    container_name: stream-clipper-ollama
     restart: unless-stopped
+    environment:
+      - OLLAMA_KEEP_ALIVE=30m       # keep the model in RAM between clips
+      - OLLAMA_NUM_PARALLEL=1
     volumes:
       - ./models/ollama:/root/.ollama
     deploy:

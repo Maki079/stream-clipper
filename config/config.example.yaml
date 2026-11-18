@@ -49,10 +49,17 @@ global:
     top_n: 3
     batch_seconds: 300
     daily_summary_time: "20:00"
-  llm:
-    enabled: false                # optional local Ollama (see README)
+  llm:                            # local Ollama LLM (README section 3c); false = no LLM at all
+    enabled: true
     ollama_url: http://ollama:11434
     model: qwen2.5:7b-instruct
+    live_judge: true              # rate every live clip from transcript + chat before rendering
+    min_score: 5                  # 0-10; below this the clip is skipped (not rendered, not sent)
+    keep_strength: 28             # ...unless the chat spike is this strong (often a visual moment)
+    trim: true                    # LLM picks start (setup) and end (payoff) ...
+    context_seconds: 20           # ... inside this much extra footage before/after
+    hook_overlay: true            # hook title burned on top for the first seconds
+    hook_seconds: 3
 
 campaigns:
   CORE:
@@ -106,33 +113,36 @@ sources:
       max_clips_per_hour: 4       # more only for really big moments (>= 2x min_strength)
 
   lacy:
-    enabled: false                # set platform + url, then enable
     mode: live
-    platform: FILL_ME             # twitch | youtube | kick
-    url: FILL_ME
+    platform: twitch
+    url: https://www.twitch.tv/lacy
+    language: en
     campaigns: [Lacy, CORE]
-    layout:
-      type: stack                 # measure crops with: stream-clipper crop-helper
-      facecam: {x: 0, y: 0, w: 480, h: 360}
-      gameplay: {x: 0, y: 0, w: 1920, h: 1080}
-      facecam_height: 700
+    layout: {type: blur_fit}       # switch to stack after: stream-clipper crop-helper
+    clip: {pre_seconds: 30, post_seconds: 35, chat_delay_seconds: 6}
+    spike: {multiplier: 2.0, z_threshold: 3.0, min_messages: 40, min_unique_chatters: 20, min_strength: 14, max_clips_per_hour: 4}
 
   marlon:
-    enabled: false
     mode: live
-    platform: FILL_ME
-    url: FILL_ME
+    platform: twitch
+    url: https://www.twitch.tv/marlon
+    language: en
     campaigns: [CORE]
+    layout: {type: blur_fit}       # switch to stack after: stream-clipper crop-helper
+    clip: {pre_seconds: 30, post_seconds: 35, chat_delay_seconds: 6}
+    spike: {multiplier: 2.0, z_threshold: 3.0, min_messages: 40, min_unique_chatters: 20, min_strength: 14, max_clips_per_hour: 4}
 
   jasontheween:
-    enabled: false
     mode: live
-    platform: FILL_ME
-    url: FILL_ME
+    platform: twitch
+    url: https://www.twitch.tv/jasontheween
+    language: en
     campaigns: [Jason, CORE]
+    layout: {type: blur_fit}       # switch to stack after: stream-clipper crop-helper
+    clip: {pre_seconds: 30, post_seconds: 35, chat_delay_seconds: 6}
+    spike: {multiplier: 2.0, z_threshold: 3.0, min_messages: 40, min_unique_chatters: 20, min_strength: 14, max_clips_per_hour: 4}
 
   kai_youtube_vods:
-    enabled: false
     mode: vod
     platform: youtube
     url: https://www.youtube.com/@KaiCenat/videos
@@ -142,6 +152,6 @@ sources:
     vod:
       watch: true                 # poll the channel for new uploads
       watch_interval_seconds: 3600
-      watch_max_items: 3
+      watch_max_items: 2
       top_n: 10
       keywords: ["no way", "oh my god", "bro", "let's go", "chat", "what"]

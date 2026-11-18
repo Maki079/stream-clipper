@@ -161,3 +161,12 @@ def test_motion_moments_and_expression():
     ev = lambda t: eval(expr.replace("t", str(t)), {"clip": lambda x, a, b: min(max(x, a), b)})  # noqa: S307
     assert math.isclose(ev(0), 1.0) and 1.14 < ev(11) < 1.17 and ev(20) < 1.04
     assert motion.build_filter([], MotionCfg(enabled=False), LayoutCfg(), OutputCfg(), 60) is None
+
+
+def test_hook_title_in_ass():
+    out = OutputCfg()
+    ass = build_ass(_words("hello chat"), out, LayoutCfg(type="blur_fit"), hook="he actually did it", hook_seconds=3)
+    hook = [l for l in ass.splitlines() if l.startswith("Dialogue: 1,")]
+    assert len(hook) == 1 and "HE ACTUALLY DID IT" in hook[0] and ",0:00:03.00,Hook," in hook[0]
+    assert "Style: Hook," in ass
+    assert "Dialogue: 1," not in build_ass(_words("hello chat"), out, LayoutCfg())

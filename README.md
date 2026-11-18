@@ -97,7 +97,7 @@ Validated at startup; unknown keys and bad values are reported as `path: problem
 | `delivery.delete_work_files` | true | remove temp files after delivery |
 | `notifications.backend` | none | `telegram` (clips as videos) or `ntfy` (see §5) |
 | `notifications.top_n` / `batch_seconds` / `daily_summary_time` | 3 / 300 / "20:00" | |
-| `llm.enabled` / `ollama_url` / `model` | false / http://ollama:11434 / qwen2.5:7b-instruct | optional local LLM (§8) |
+| `llm.enabled` / `ollama_url` / `model` | false / http://ollama:11434 / qwen2.5:7b-instruct | local LLM judge + hook (§3c) |
 
 ### `campaigns.<NAME>`
 | key | meaning |
@@ -160,6 +160,34 @@ Subtitles are burned in after the effect, so they never move. The planned zooms 
 `ken_burns: 0` keeps only the punch-ins.
 
 ---
+
+## 3c. LLM judge for live clips (Ollama, free, offline)
+
+The `ollama` service in `docker-compose.yml` runs `qwen2.5:7b-instruct` on the CPU. The model (~5 GB) is pulled
+automatically into `models/ollama/` on the first start. For every live clip, after Whisper and **before** rendering:
+
+1. **Score 0–10.** The LLM reads the timestamped transcript, the chat-spike time and the most repeated chat messages.
+   It answers a checklist: does something specific happen, is there a payoff, is it understandable without context,
+   and how intense is it, plus an overall score. The 0–10 score is computed from these answers in Python, because
+   7B models calibrate a plain 0–10 score badly (almost everything gets 6–7). Clips below `min_score` (5) get status
+   `skipped`: no render, no Telegram message. Very strong chat spikes (strength ≥ `keep_strength`, 28) are never
+   skipped, because those are often visual moments the model can't see. The reason is stored in `meta.llm`.
+2. **Cut.** The cut job takes `context_seconds` (20 s) of extra footage on both sides. The LLM picks the start (the
+   setup, not mid-sentence) and the end (right after the payoff). The cut is forced inside the campaign's min/max
+   length and must contain the chat moment. Otherwise the planned window is used.
+3. **Hook.** Generic hooks ("CHAT REACTS", "CREATOR'S REACTION") are dropped. A good ≤ 6-word title is burned in a yellow box on top for the first `hook_seconds` (3 s). It is also used
+   in the captions.
+
+Cost is ~40–60 s per clip (Ollama has 8 cores). Skipped clips save the whole render. If Ollama is down or answers garbage, the clip
+is rendered exactly as before; the LLM never blocks a clip. The model only sees text (speech + chat), not the
+picture. That is why a moment with little speech but a crazy chat gets a neutral 5–6. To see the decisions:
+
+```bash
+docker compose logs clipper | grep -E "llm verdict|skipped by llm"
+```
+
+Switch off: `llm.enabled: false` (everything), `live_judge: false` (keep VOD use), `trim: false`, `hook_overlay: false`.
+Stricter / looser: raise / lower `min_score`.
 
 ## 4. Google Drive via rclone (headless)
 
@@ -295,12 +323,7 @@ Windows of every allowed length are scored by their mean. The best non-overlappi
 `data/vod/<item>/scores.csv` (score per second) for inspection; the sidecar has the per-feature values of each clip.
 Set a weight to 0 to switch a feature off (`scene_density: 0` also skips the scene-detection pass).
 
-**Optional local LLM (Ollama, CPU, free):**
-```bash
-docker compose --profile llm up -d ollama
-docker compose exec ollama ollama pull qwen2.5:7b-instruct
-```
-then `llm.enabled: true`. It rates the `top_k_candidates` (15) best heuristic windows 0–10 for "viral short", writes
+**Local LLM (§3c):** with `llm.enabled: true` it also rates the `top_k_candidates` (15) best heuristic windows 0–10 for "viral short", writes
 hook titles for captions, and reorders the picks. It's slow on CPU (~10–30 s per window) and is never required; if it
 fails, the heuristic result is used.
 
