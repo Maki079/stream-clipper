@@ -125,3 +125,37 @@ def test_csv_prune_cleans_bookkeeping(tmp_path):
     buffer.prune(tmp_path, 60, None, now=1200, keep_session="new")
     assert not list(tmp_path.glob("old*"))
     assert (tmp_path / "new.csv").exists()
+
+
+def test_recorder_restarts_when_timeline_drifts(tmp_path, monkeypatch):
+    """Network stall: streamlink resumes at the live edge, the stream timeline lags wall-clock -> restart."""
+    import asyncio
+
+    from stream_clipper.live import recorder as rec_mod
+
+    now = time.time()
+    rows, t = [], 0.0
+    for i in range(20):
+        name = f"s1_{i:06d}.ts"
+        (tmp_path / name).write_bytes(b"x")
+        rows.append(f"{name},{t:.6f},{t + 5:.6f}")
+        t += 5
+        lag = 0 if i < 12 else 120  # after segment 12 the stream stalled for 2 minutes
+        m = now - 100 + t + lag - 20 * 5 + 0.5
+        os.utime(tmp_path / name, (m, m))
+    (tmp_path / "s1.csv").write_text("\n".join(rows) + "\n")
+
+    class Proc:
+        returncode = None
+        terminated = False
+
+        def terminate(self):
+            self.terminated = True
+
+    r = rec_mod.Recorder("x", None, None, tmp_path)
+    p = Proc()
+    r._procs = [p]
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(rec_mod.asyncio, "sleep", lambda s: real_sleep(0))
+    asyncio.run(asyncio.wait_for(r._watch_live("s1"), 5))
+    assert p.terminated and r.live

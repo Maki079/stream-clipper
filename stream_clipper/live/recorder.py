@@ -18,6 +18,8 @@ from .resolve import stream_input
 
 L = log.get("recorder")
 
+DRIFT_RESTART_SECONDS = 20.0
+
 
 class Recorder:
     def __init__(self, name: str, src: SourceCfg, cfg: AppConfig, buffer_dir: Path, pinned_from=lambda: None):
@@ -102,11 +104,31 @@ class Recorder:
             L.info("streamlink exited", extra={"source": self.name, "stderr": err.strip()})
 
     async def _watch_live(self, session: str) -> None:
-        """Live = segments of this session are being produced."""
+        """Live = segments of this session are being produced (fresh files on disk).
+
+        A session's timeline is anchored to wall-clock once. If streamlink stalls (network outage) and then
+        resumes at the live edge, the stream timeline falls behind real time for good: every clip would be cut
+        from the wrong place. Detect that drift and restart the session, which gets a fresh anchor."""
         while True:
             await asyncio.sleep(2)
             segs = [s for s in buffer.list_segments(self.dir, settle=0) if s.session == session]
-            self._set_live(bool(segs) and time.time() - segs[-1].end < 30)
+            if not segs:
+                self._set_live(False)
+                continue
+            try:
+                mtime = segs[-1].path.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            fresh = time.time() - mtime < 30
+            self._set_live(fresh)
+            drift = mtime - segs[-1].end
+            if fresh and len(segs) > buffer.ANCHOR_SAMPLES and abs(drift) > DRIFT_RESTART_SECONDS:
+                L.warning("stream timeline drifted, restarting recording",
+                          extra={"source": self.name, "drift": round(drift, 1)})
+                for p in self._procs:
+                    if p.returncode is None:
+                        p.terminate()
+                return
 
     async def _prune_loop(self) -> None:
         while True:
