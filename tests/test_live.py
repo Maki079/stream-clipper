@@ -127,38 +127,37 @@ def test_csv_prune_cleans_bookkeeping(tmp_path):
     assert (tmp_path / "new.csv").exists()
 
 
-def test_recorder_restarts_when_timeline_drifts(tmp_path, monkeypatch):
-    """Network stall: streamlink resumes at the live edge, the stream timeline lags wall-clock -> restart."""
-    import asyncio
-
-    from stream_clipper.live import recorder as rec_mod
-
-    now = time.time()
+def test_reanchor_follows_wall_clock_after_stall(tmp_path):
+    """Network stall: streamlink resumes at the live edge, media time lags arrival time -> new anchor."""
     rows, t = [], 0.0
-    for i in range(20):
+    for i in range(30):
         name = f"s1_{i:06d}.ts"
         (tmp_path / name).write_bytes(b"x")
         rows.append(f"{name},{t:.6f},{t + 5:.6f}")
         t += 5
-        lag = 0 if i < 12 else 120  # after segment 12 the stream stalled for 2 minutes
-        m = now - 100 + t + lag - 20 * 5 + 0.5
+        lag = 0 if i < 20 else 120  # after segment 20 the stream stalled for 2 minutes
+        os.utime(tmp_path / name, (1000 + t + lag, 1000 + t + lag))
+    (tmp_path / "s1.csv").write_text("\n".join(rows) + "\n")
+    buffer.list_segments(tmp_path)  # freezes the first anchor
+    assert buffer.reanchor(tmp_path, "s1") == 120
+    assert buffer.reanchor(tmp_path, "s1") is None  # stable afterwards
+    segs = buffer.list_segments(tmp_path)
+    assert abs(segs[0].end - 1005) < 1e-6 and abs(segs[10].end - 1055) < 1e-6
+    assert abs(segs[-1].end - (1000 + 150 + 120)) < 1e-6  # glued to arrival time again
+
+
+def test_reanchor_ignores_small_jitter(tmp_path):
+    rows, t = [], 0.0
+    for i in range(30):
+        name = f"s1_{i:06d}.ts"
+        (tmp_path / name).write_bytes(b"x")
+        rows.append(f"{name},{t:.6f},{t + 5:.6f}")
+        t += 5
+        m = 1000 + t + (1.5 if i % 2 else -1.0)
         os.utime(tmp_path / name, (m, m))
     (tmp_path / "s1.csv").write_text("\n".join(rows) + "\n")
-
-    class Proc:
-        returncode = None
-        terminated = False
-
-        def terminate(self):
-            self.terminated = True
-
-    r = rec_mod.Recorder("x", None, None, tmp_path)
-    p = Proc()
-    r._procs = [p]
-    real_sleep = asyncio.sleep
-    monkeypatch.setattr(rec_mod.asyncio, "sleep", lambda s: real_sleep(0))
-    asyncio.run(asyncio.wait_for(r._watch_live("s1"), 5))
-    assert p.terminated and r.live
+    buffer.list_segments(tmp_path)
+    assert buffer.reanchor(tmp_path, "s1") is None
 
 
 def test_youtube_chat_prefers_live_chat_over_top_chat():

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ANCHOR_SAMPLES = 8
+REANCHOR_DRIFT = 2.5   # seconds; small enough that the resulting gap/overlap stays under coverage()'s max_gap
 
 
 @dataclass(frozen=True)
@@ -50,22 +51,86 @@ def _read_csv(p: Path) -> list[tuple[str, float, float]]:
     return rows
 
 
-def _anchor(d: Path, session: str, rows: list[tuple[str, float, float]], mtimes: dict[str, float]) -> float | None:
-    af = d / f"{session}.anchor"
+def _read_anchors(af: Path) -> list[tuple[int, float]] | None:
+    """<session>.anchor: first line = anchor for row 0; later lines "<row> <anchor>" = re-anchors from that row."""
     try:
-        return float(af.read_text())
-    except (FileNotFoundError, ValueError):
-        pass
+        lines = af.read_text().split("\n")
+    except FileNotFoundError:
+        return None
+    out: list[tuple[int, float]] = []
+    try:
+        out.append((0, float(lines[0])))
+    except (ValueError, IndexError):
+        return None
+    for ln in lines[1:]:
+        parts = ln.split()
+        if len(parts) == 2:
+            try:
+                out.append((int(parts[0]), float(parts[1])))
+            except ValueError:
+                continue
+    return out
+
+
+def _anchor(d: Path, session: str, rows: list[tuple[str, float, float]],
+            mtimes: dict[str, float]) -> list[tuple[int, float]] | None:
+    af = d / f"{session}.anchor"
+    anchors = _read_anchors(af)
+    if anchors:
+        return anchors
     samples = [mtimes[f] - end for f, _, end in rows[2:] if f in mtimes] or \
               [mtimes[f] - end for f, _, end in rows if f in mtimes]
     if not samples:
         return None
     a = statistics.median(samples)
     if len(samples) >= ANCHOR_SAMPLES:
-        tmp = af.with_suffix(f".tmp{os.getpid()}")
-        tmp.write_text(f"{a:.3f}")
-        tmp.replace(af)
+        _write_anchors(af, [(0, a)])
+    return [(0, a)]
+
+
+def _write_anchors(af: Path, anchors: list[tuple[int, float]]) -> None:
+    text = f"{anchors[0][1]:.3f}" + "".join(f"\n{i} {a:.3f}" for i, a in anchors[1:])
+    tmp = af.with_suffix(f".tmp{os.getpid()}")
+    tmp.write_text(text)
+    tmp.replace(af)
+
+
+def _anchor_for(anchors: list[tuple[int, float]], i: int) -> float:
+    a = anchors[0][1]
+    for start, v in anchors:
+        if start <= i:
+            a = v
     return a
+
+
+def reanchor(d: Path, session: str, max_drift: float = REANCHOR_DRIFT, recent: int = 5) -> float | None:
+    """Keep a session's stream timeline glued to wall-clock.
+
+    Media time and arrival time drift apart (ads filtered out, the player falling behind the live edge,
+    a network stall followed by a jump to the live edge). When the last `recent` segments arrive, on
+    median, more than `max_drift` seconds off the current anchor, segments from there on get a new anchor.
+    Called only by the session's recorder (single writer). Returns the drift that was corrected, else None."""
+    af = d / f"{session}.anchor"
+    anchors = _read_anchors(af)
+    rows = _read_csv(d / f"{session}.csv")
+    if not anchors or len(rows) < recent + anchors[-1][0] + recent:
+        return None  # not frozen yet, or too soon after the last re-anchor
+    first = len(rows) - recent
+    samples = []
+    for f, _, end in rows[first:]:
+        try:
+            samples.append((d / f).stat().st_mtime - end)
+        except FileNotFoundError:
+            pass
+    if len(samples) < recent:
+        return None
+    cur = _anchor_for(anchors, first)
+    new = statistics.median(samples)
+    if abs(new - cur) <= max_drift:
+        return None
+    anchors.append((first, new))
+    _write_anchors(af, anchors)
+    return new - cur
 
 
 def list_segments(d: Path, *, now: float | None = None, settle: float = 1.0) -> list[Segment]:
@@ -86,7 +151,8 @@ def list_segments(d: Path, *, now: float | None = None, settle: float = 1.0) -> 
             anchor = _anchor(d, session, rows, mtimes)
             if anchor is None:
                 continue
-            segs += [Segment(d / f, anchor + s, anchor + e, session) for f, s, e in rows if f in mtimes]
+            segs += [Segment(d / f, _anchor_for(anchor, i) + s, _anchor_for(anchor, i) + e, session)
+                     for i, (f, s, e) in enumerate(rows) if f in mtimes]
             continue
         for p in files:  # legacy epoch-named files (new-format names are 6-digit sequence numbers)
             suffix = p.stem.rsplit("_", 1)[-1]
