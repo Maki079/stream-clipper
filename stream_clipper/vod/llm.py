@@ -51,8 +51,9 @@ def hook(cfg: LlmCfg, text: str, creator: str = "") -> str | None:
 # ------------------------------------------------------------------ live judge
 
 JUDGE_PROMPT = """You are a picky short-form video editor. Chat spiked during a livestream; you decide if this moment
-is worth posting on TikTok/Reels/Shorts and where to cut it. Chat spikes happen all the time (jokes, donations,
-polls, emotes, random hype), so MOST moments are NOT worth posting. Be harsh: give 6+ to at most a third of them.
+is worth posting on TikTok/Reels/Shorts and where to cut it. Chat spikes also happen for nothing (donations, polls,
+emote spam), so not every moment is worth posting. You only see the speech, not the video: what the streamer SAYS
+and how chat reacts is your evidence.
 
 Creator: {creator}
 Chat spiked at second: {moments} (the thing they reacted to happened just before)
@@ -60,29 +61,30 @@ Most repeated chat messages: {chat}
 Speech transcript ({total:.0f} s of footage, timestamps in seconds):
 {transcript}
 
-Answer these about the clip as a stranger scrolling TikTok would see it. Be honest, "no" is the usual answer:
- event: does something specific HAPPEN (a play, fail, win, loss, argument, prank, reveal, scare) - not just talking,
-        reading chat/donations, waiting or commentary?
+Answer these about the clip as a stranger scrolling TikTok would see it:
+ event: does something specific happen? A play, fail, win, loss, scare or prank counts, and so does a moment in the
+        talking: a rant, roast, argument, hot take, confession, wild story, funny line. Plain small talk, reading
+        donations, waiting or explaining game mechanics does not count.
  payoff: is there a clear punchline, result or big reaction you can point to?
  standalone: would a stranger understand it without knowing the stream?
  intensity: 1 calm ... 5 screaming / losing it / everyone in shock
  score: overall 0-10 (0-2 nothing, 3-4 small or needs context, 5 decent, 6-7 clearly good, 8-10 viral)
-Chat messages that are only emotes or "W"/"L" spam do not prove anything happened. With almost no speech you
-cannot verify the moment: event=false unless the chat messages describe it.
+Chat messages that are only emotes or "W"/"L" spam do not prove anything happened, but laughing (LUL, KEKW, LMAO)
+right after a line means the line landed. With almost no speech judge from what the chat messages describe.
 
 Cut: {min_len:.0f}-{max_len:.0f} s long, must contain second {first_moment}, start 10-25 s before it at the
 beginning of the situation (not mid-sentence), end shortly after the reaction settles.
 
-Hook: on-screen title for the first 3 seconds that makes a stranger stay. Max 6 words, English, about what
-happens in the clip (never about chat), no hashtags, no emojis, no quotes. Good: "HE THOUGHT NOBODY WAS LOOKING",
-"THIS ENDED HIS WIN STREAK". Bad: "CHAT EXPLODES", "WHAT JUST HAPPENED".
+Hook: on-screen title for the first 3 seconds that makes a stranger stay. Max 6 words, English, specific to THIS
+clip (names the thing that happens, teases the payoff without spoiling it), never about chat, no generic phrases,
+no hashtags, no emojis, no quotes.
 
 Answer ONLY with JSON:
 {{"what_happens": "<one sentence>", "event": <true|false>, "payoff": <true|false>, "standalone": <true|false>, "intensity": <1-5>, "score": <0-10>, "start": <second>, "end": <second>, "hook": "<title>", "reason": "<max 12 words>"}}
 """
 
 
-_GENERIC_HOOK = re.compile(r"\b(chat|viewers?|creator'?s?|streamer'?s?|reacts?|reaction)\b", re.I)
+_GENERIC_HOOK = re.compile(r"\b(chat|viewers?|reacts?|reactions?)\b", re.I)
 
 
 def clean_hook(h) -> str:

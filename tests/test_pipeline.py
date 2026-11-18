@@ -244,4 +244,4 @@ def test_llm_clean_hook():
 
     assert clean_hook('"#DIES EVERY ROUND"') == "DIES EVERY ROUND"
     assert clean_hook("MISSION FAIL, CHAT REACTS") == "" and clean_hook("CREATOR'S SHOCK REACTION") == ""
-    assert clean_hook(None) == ""
+    assert clean_hook(None) == "" and clean_hook("Streamer hasn't eaten all day!") == "Streamer hasn't eaten all day!"
