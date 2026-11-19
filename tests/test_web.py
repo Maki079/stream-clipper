@@ -300,3 +300,84 @@ def test_host_bypass_environment_wired_to_server(tmp_path, monkeypatch):
     monkeypatch.setenv("CLIPPER_WEB_SKIP_HOST_CHECK", "false")
     with pytest.raises(ConfigError, match="Set CLIPPER_WEB_PASSWORD"):
         web.serve(args)
+
+
+def test_container_restart_unavailable_in_local_mode(server):
+    status = json.loads(request(server, "/api/status")[1])
+    assert not status["container_restart_available"]
+    headers = {"X-Clipper-CSRF": server.app.csrf}
+    assert request(server, "/api/container/restart", {}, headers)[0] == 403
+    assert not server.container_restarting.is_set()
+
+
+def test_container_restart_requires_auth_and_csrf_then_shuts_down(server):
+    server.allow_container_restart = True
+    server.password = "test"
+    assert json.loads(request(server, "/api/status", headers={
+        "Authorization": "Basic " + base64.b64encode(b"admin:test").decode()})[1])["container_restart_available"]
+    assert request(server, "/api/container/restart", {})[0] == 401
+    headers = {"Authorization": "Basic " + base64.b64encode(b"admin:test").decode()}
+    assert request(server, "/api/container/restart", {}, headers)[0] == 403
+    assert not server.container_restarting.is_set()
+    headers["X-Clipper-CSRF"] = server.app.csrf
+    code, body, _ = request(server, "/api/container/restart", {}, headers)
+    assert code == 202 and json.loads(body)["ok"]
+    assert server.container_restarting.is_set()
+
+
+def test_docker_mode_drains_service_on_web_shutdown(app, monkeypatch):
+    monkeypatch.setenv("CLIPPER_WEB_CONTAINER", "true")
+    monkeypatch.delenv("CLIPPER_WEB_HOSTS", raising=False)
+    monkeypatch.delenv("CLIPPER_WEB_SKIP_HOST_CHECK", raising=False)
+    monkeypatch.setattr(web, "WebApp", lambda *args, **kwargs: app)
+    monkeypatch.setattr(web.signal, "signal", lambda *args: None)
+    stopped = []
+    monkeypatch.setattr(app, "stop", lambda: stopped.append(True))
+
+    def finish(server):
+        assert server.allow_container_restart
+        server.container_restarting.set()
+
+    monkeypatch.setattr(WebServer, "serve_forever", finish)
+    args = SimpleNamespace(config=app.path, host="127.0.0.1", port=0,
+                           record_chat=False, autostart=False)
+    web.serve(args)
+    assert stopped == [True]
+
+
+def test_authenticated_download_streams_only_recorded_local_clip(server, tmp_path):
+    app = server.app
+    raw = app.config()
+    output = tmp_path / "output"
+    raw["config"]["global"]["delivery"]["local_dir"] = str(output)
+    app.save(raw["config"], raw["revision"])
+    output.mkdir()
+    video = output / "one.mp4"
+    payload = b"fake video content" * 10000
+    video.write_bytes(payload)
+    path = db.db_path(load_config(app.path).g.data_dir)
+    db.init(path)
+    conn = db.connect(path)
+    try:
+        store = db.Store(conn)
+        store.add_clip("one", "channel", "live", 0, 65, 8, [], {}, status="delivered")
+        store.add_delivery("one", "campaign", str(output), str(video))
+        assert app.status()["clips"][0]["download_available"]
+        server.password = "test"
+        assert request(server, "/api/clips/one/download")[0] == 401
+        auth = {"Authorization": "Basic " + base64.b64encode(b"admin:test").decode()}
+        code, body, headers = request(server, "/api/clips/one/download", headers=auth)
+        assert code == 200 and body == payload
+        assert headers["Content-Type"] == "video/mp4"
+        assert headers["Content-Disposition"].startswith("attachment;")
+        assert int(headers["Content-Length"]) == len(payload)
+        assert request(server, "/api/clips/missing/download", headers=auth)[0] == 404
+        assert request(server, "/api/clips/%2e%2e%2fone/download", headers=auth)[0] == 404
+        conn.execute("UPDATE clips SET status='cut' WHERE id='one'")
+        assert request(server, "/api/clips/one/download", headers=auth)[0] == 404
+        conn.execute("UPDATE clips SET status='delivered' WHERE id='one'")
+        video.unlink()
+        assert not app.status()["clips"][0]["download_available"]
+        assert request(server, "/api/clips/one/download", headers=auth)[0] == 404
+    finally:
+        conn.close()

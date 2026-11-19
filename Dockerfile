@@ -34,8 +34,10 @@ COPY config/config.example.yaml /app/config.example.yaml
 RUN useradd -m -u 1000 clipper \
  && mkdir -p /config /data /buffer /models /output \
  && chown -R clipper:clipper /config /data /buffer /models /output
-USER clipper
+# Startup repairs bind mounts as root, then drops to the clipper UID/GID before
+# starting the web panel, capture supervisor, or any media processing.
+USER root
 
 HEALTHCHECK --interval=30s --timeout=15s --start-period=90s --retries=3 CMD ["stream-clipper", "health"]
-ENTRYPOINT ["tini", "--", "stream-clipper"]
+ENTRYPOINT ["tini", "--", "python", "-m", "stream_clipper.container"]
 CMD ["run"]

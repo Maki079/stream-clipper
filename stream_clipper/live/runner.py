@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from collections import deque
 from pathlib import Path
@@ -52,6 +53,7 @@ class LiveRunner:
         self.stats = {"messages": 0, "spikes": 0, "clips": 0}
         self._tasks: list[asyncio.Task] = []
         self._last_stats_log = 0.0
+        self._last_activity = 0.0
 
     # ------------------------------------------------------------- callbacks
     def _on_live_change(self, live: bool) -> None:
@@ -59,6 +61,20 @@ class LiveRunner:
             self.detector.reset(time.time())  # warm-up again on every (re)start
         else:
             self._submit(self.planner.flush(), final=True)
+        self.publish_activity()
+
+    def publish_activity(self, *, stopped: bool = False) -> None:
+        """Publish observed recorder state, not whether a source is enabled."""
+        online = self.recorder.live and not stopped
+        self.ctx.store.kv_set(f"source_live:{self.name}", json.dumps({
+            "updated_at": time.time(), "pid": os.getpid(), "online": online,
+            "farming": online and self.src.resolved_chat_backend() != "none",
+            "live_since": self.recorder.live_since if online else None,
+            "open_clip": online and self.planner.open is not None,
+            "messages": self.stats["messages"], "spikes": self.stats["spikes"],
+            "clips_queued": self.stats["clips"],
+            "messages_in_window": self.detector.last.get("messages", 0),
+        }))
 
     def on_message(self, m: ChatMessage) -> None:
         self.stats["messages"] += 1
@@ -96,6 +112,9 @@ class LiveRunner:
         while not self.stop_event.is_set():
             await asyncio.sleep(1)
             now = time.time()
+            if now - self._last_activity >= 5:
+                self._last_activity = now
+                self.publish_activity()
             while self.recent and self.recent[0].ts < now - 600:
                 self.recent.popleft()
             if not self.recorder.live:
@@ -146,3 +165,4 @@ class LiveRunner:
         await self.recorder.stop()
         for t in self._tasks:
             t.cancel()
+        self.publish_activity(stopped=True)

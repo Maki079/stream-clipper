@@ -3,8 +3,12 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const clone = value => structuredClone(value);
-const state = {config: null, schema: null, revision: null, csrf: null, dirty: false, status: null, page: 'overview', settings: 'output', busy: false};
+const state = {config: null, schema: null, revision: null, csrf: null, dirty: false, status: null, page: 'overview', settings: 'output', busy: false, containerRestarting: false};
 const titles = {overview: 'Overview', sources: 'Sources', campaigns: 'Campaigns', clips: 'Clips', jobs: 'Job queue', settings: 'Settings'};
+const languageCodes = ['en','pl','sk','cs','de','fr','es','it','pt','nl','uk','ru','ar','zh','ja','ko','hi','tr','sv','no','da','fi','el','ro','hu','bg','hr','sr','bs','sl','lt','lv','et','he','fa','id','ms','vi','th','bn','ta','te','ur','sw','af','ca','cy','is','ga','mk','sq','hy','ka','az','kk','ne','si','tl','la'];
+const languageNames = new Intl.DisplayNames(['en'], {type: 'language'});
+state.logsFollow = true;
+state.logScrollTop = 0;
 const labels = {url: 'Source URL or path', enabled: 'Enabled', mode: 'Capture mode', creator_name: 'Creator mention', required_hashtags: 'Required hashtags', extra_hashtags: 'Extra hashtags', min_seconds: 'Minimum length (seconds)', max_seconds: 'Maximum length (seconds)', pre_seconds: 'Before the moment (seconds)', post_seconds: 'After the moment (seconds)', chat_delay_seconds: 'Chat reaction delay (seconds)', cpu_workers: 'CPU workers', threads_per_worker: 'Threads per worker', io_slots: 'Concurrent I/O jobs', llm: 'AI highlight judge', vod: 'Video highlights', whisper: 'Transcription', ntfy: 'ntfy', rclone: 'Google Drive (rclone)', subtitle_y: 'Subtitle position (0–1)', top_n: 'Highlights per video', type: 'Layout', bot_token: 'Bot token', youtube_api_key: 'YouTube API key', fonts_dir: 'Font directory', ollama_url: 'Ollama address'};
 let fieldCounter = 0;
 const label = key => labels[key] || key.replaceAll('_', ' ').replace(/^./, c => c.toUpperCase());
@@ -64,7 +68,17 @@ function field(key, prop, obj, changed, options = {}) {
   const wrapper = node('div', 'field'); const caption = node(arrayChoices ? 'span' : 'label', '', label(key)); wrapper.append(caption);
   let input;
   const enumeration = schema.enum || (schema.const !== undefined ? [schema.const] : null);
-  if (arrayChoices) {
+  if (key === 'language' || key === 'caption_language') {
+    input = document.createElement('select');
+    const codes = key === 'language' ? ['auto', ...languageCodes] : [...languageCodes];
+    if (obj[key] && !codes.includes(obj[key])) codes.push(obj[key]);
+    for (const code of codes) {
+      let name; try {name = code === 'auto' ? 'Detect automatically' : `${languageNames.of(code)} (${code})`;} catch {name = code;}
+      const option = node('option', '', name); option.value = code; input.append(option);
+    }
+    input.value = obj[key] || (key === 'language' ? 'auto' : 'en');
+    input.addEventListener('change', () => {obj[key] = input.value; changed();});
+  } else if (arrayChoices) {
     input = node('div', 'checkboxes');
     for (const name of arrayChoices) {
       const option = node('label'); const check = document.createElement('input'); check.type = 'checkbox'; check.value = name; check.checked = (obj[key] || []).includes(name);
@@ -107,11 +121,30 @@ function fillFields(container, schema, obj, changed, options = {}) {
   }
 }
 
-function sourceCard(name, src, campaign = false) {
+function runtimeBadges(name, src) {
+  const activity = state.status?.sources?.[name];
+  const states = {paused: 'Paused', stopped: 'Service stopped', video: 'Video source', farming: 'Online · farming', online: 'Online · no chat capture', offline: 'Offline / reconnecting', unknown: 'Checking stream'};
+  const area = node('div', 'runtime-badges');
+  area.append(badge(activity ? states[activity.status] : !src.enabled ? 'Paused' : state.status?.running ? 'Waiting for status' : 'Service stopped', activity?.online ? 'good' : ''));
+  if (activity?.building) area.append(badge(activity.open_clip ? 'Capturing a clip' : 'Making clips', 'warn'));
+  return area;
+}
+function runtimeDetails(name) {
+  const activity = state.status?.sources?.[name]; const area = node('div', 'source-runtime');
+  if (activity) {
+    area.append(node('div', 'source-metrics', `${activity.clips_24h} clips captured · ${activity.delivered_24h} delivered (24h)`));
+    area.append(node('div', 'source-metrics', `${activity.running_jobs} running jobs · ${activity.queued_jobs} queued`));
+    if (activity.farming) area.append(node('div', 'source-metrics', `${activity.messages_in_window} messages in chat window · ${activity.spikes} spikes this session`));
+  }
+  return area;
+}
+function sourceCard(name, src, campaign = false, readOnly = false) {
   const card = node('article', 'source-card');
+  if (!campaign) card.dataset.source = name;
   const icon = node('div', `platform-icon ${campaign ? '' : src.platform}`, campaign ? '⚑' : ({twitch: 'T', youtube: '▶', kick: 'K', local: '▤', gdrive: 'D'}[src.platform] || '◉'));
   const title = append(node('div'), node('h3', '', name), node('div', 'source-type', campaign ? src.creator_name : `${label(src.platform)} · ${src.mode === 'live' ? 'Live capture' : 'Video highlights'}`));
-  const top = append(node('div', 'source-top'), icon, title, campaign ? null : badge(src.enabled ? 'Enabled' : 'Paused', src.enabled ? 'good' : ''));
+  const top = append(node('div', 'source-top'), icon, title);
+  if (!campaign) card.append(runtimeBadges(name, src));
   const tags = node('div', 'tag-list'); (campaign ? src.required_hashtags : src.campaigns).forEach(tag => tags.append(node('span', 'tag', tag)));
   if (!tags.children.length) tags.append(node('span', 'muted', campaign ? 'No required hashtags' : 'No campaigns assigned'));
   const bottom = node('div', 'source-bottom');
@@ -126,8 +159,12 @@ function sourceCard(name, src, campaign = false) {
     if (campaign) Object.values(state.config.sources).forEach(s => {s.campaigns = s.campaigns.filter(c => c !== name);});
     markDirty(); render();
   }, 'subtle danger');
-  append(actions, edit, remove); bottom.append(actions);
-  append(card, top, node('div', 'source-url', campaign ? src.notes || 'Campaign rules and delivery captions' : src.url), tags, bottom); return card;
+  append(actions, edit, button('Duplicate', () => editEntity(campaign ? 'campaigns' : 'sources', name, true), 'subtle'), remove); bottom.append(actions);
+  card.prepend(top);
+  append(card, node('div', 'source-url', campaign ? src.notes || 'Campaign rules and delivery captions' : src.url), tags);
+  if (!campaign) card.append(runtimeDetails(name));
+  if (!readOnly) card.append(bottom);
+  return card;
 }
 function showWarnings(root) {
   if (!state.exists) root.append(notice('Welcome! Add a campaign and a source, then save your settings to set up Stream Clipper.', 'info'));
@@ -140,9 +177,18 @@ function serviceButtons() {
   const actions = node('div', 'actions'); const running = state.status?.running;
   if (running) {
     actions.append(button('Stop service', () => serviceAction('stop'), 'subtle'));
+    actions.append(button('Restart capture', () => serviceAction('restart'), 'subtle'));
     if (state.status.restart_required) actions.append(button('Apply & restart', () => serviceAction('restart'), 'primary'));
   } else actions.append(button('Start service', () => serviceAction('start'), 'primary'));
-  $$('button', actions).forEach(b => {b.disabled = state.busy || state.status?.external;}); return actions;
+  if (state.status?.container_restart_available) actions.append(button('Restart container', restartContainer, 'subtle'));
+  $$('button', actions).forEach(b => {b.disabled = state.busy || state.containerRestarting || state.status?.external;}); return actions;
+}
+async function restartContainer() {
+  if (state.dirty) {toast('Save or discard your changes before restarting the container.', true); return;}
+  if (!await ask('Restart the capture container?', 'This restarts the clipper container, including capture workers and the web panel. Running work gets time to finish. The panel reconnects automatically; allow up to two minutes.', 'Restart container')) return;
+  state.containerRestarting = true; render();
+  try {await api('container/restart', {}); toast('Container restart requested. Waiting for the panel to return…');}
+  catch (error) {state.containerRestarting = false; toast(error.message, true); render();}
 }
 async function serviceAction(action) {
   if (state.dirty && action !== 'stop') {toast('Save your changes before starting or applying settings.', true); return;}
@@ -160,18 +206,28 @@ function overview(root) {
   const heroText = append(node('div'), node('div', 'eyebrow', 'LESS EDITING. MORE CREATING.'), node('h2', '', running ? 'Your clipping workflow is running.' : 'Great moments deserve to be seen.'), node('p', '', running ? 'Watch your queue and recent clips below. Add new sources or fine-tune your campaigns whenever you need.' : 'Connect a stream or video, set your campaign rules, and turn the best moments into vertical clips.'), button('+ Add a source', () => editEntity('sources'), 'primary'));
   const art = append(node('div', 'hero-art'), node('div', 'film', '▶')); art.setAttribute('aria-hidden', 'true');
   root.append(append(node('section', 'hero'), heroText, art));
-  const stats = node('div', 'stats'); const counts = state.status?.counts || {}; const sources = Object.values(state.config.sources);
-  const metrics = [['Enabled sources', sources.filter(s => s.enabled).length, `${sources.length} connected in total`], ['Clips delivered', state.status?.clip_count ?? 0, 'All-time finished clips'], ['Jobs in progress', (counts.running || 0) + (counts.queued || 0), `${counts.running || 0} running · ${counts.queued || 0} queued`], ['Needs attention', counts.failed || 0, 'Failed jobs available to retry']];
+  const stats = node('div', 'stats');
+  const active = Object.entries(state.status?.sources || {}).filter(([, activity]) => activity.online && activity.farming);
+  const sum = key => active.reduce((total, [, activity]) => total + (activity[key] || 0), 0);
+  const metrics = [['Actively farming', active.length, 'Online streams capturing highlights'], ['Clips captured', sum('clips_24h'), 'Active streams · last 24 hours'], ['Clips delivered', sum('delivered_24h'), 'Active streams · last 24 hours'], ['Production jobs', sum('running_jobs') + sum('queued_jobs'), `${sum('running_jobs')} running · ${sum('queued_jobs')} queued`]];
   metrics.forEach(([name, value, note]) => stats.append(append(node('div', 'stat'), node('div', 'stat-label', name), node('div', 'stat-number', String(value)), node('div', 'stat-note', note)))); root.append(stats);
-  root.append(section('Connected sources', 'Manage sources', '#sources'));
-  const grid = node('div', 'card-grid'); Object.entries(state.config.sources).slice(0, 3).forEach(([name, src]) => grid.append(sourceCard(name, src)));
-  root.append(grid.children.length ? grid : empty('Your workspace is ready.', 'Add your first stream or video source to begin.', button('+ Add a source', () => editEntity('sources'), 'primary')));
+  root.append(section('Streams farming clips', 'Manage sources', '#sources'));
+  const grid = node('div', 'card-grid'); active.forEach(([name, activity]) => grid.append(sourceCard(name, activity.source, false, true)));
+  root.append(grid.children.length ? grid : empty('No streams are farming clips right now.', 'Start the service and wait for an enabled live source to come online. All configured sources are available on the Sources page.'));
   root.append(section('Recent clips', 'View all clips', '#clips')); clipTable(root, (state.status?.clips || []).slice(0, 5));
-  root.append(section('Service activity')); root.append(node('pre', 'logs', state.status?.logs?.join('\n') || 'Service logs will appear here after you start the service from this interface.'));
+  const logHeading = section('Service activity'); const follow = node('label', 'toggle');
+  const followInput = document.createElement('input'); followInput.type = 'checkbox'; followInput.checked = state.logsFollow; followInput.id = 'follow-logs';
+  append(follow, followInput, document.createTextNode('Follow latest')); logHeading.append(follow); root.append(logHeading);
+  const logs = node('pre', 'logs', state.status?.logs?.join('\n') || 'Service logs will appear here after you start the service from this interface.');
+  logs.id = 'service-logs'; logs.tabIndex = 0; logs.setAttribute('aria-label', 'Service activity logs');
+  followInput.addEventListener('change', () => {state.logsFollow = followInput.checked; if (state.logsFollow) logs.scrollTop = logs.scrollHeight;});
+  logs.addEventListener('scroll', () => {state.logScrollTop = logs.scrollTop; state.logsFollow = logs.scrollHeight - logs.scrollTop - logs.clientHeight < 24; followInput.checked = state.logsFollow;});
+  root.append(logs);
+  requestAnimationFrame(() => {logs.scrollTop = state.logsFollow ? logs.scrollHeight : state.logScrollTop;});
 }
 function entities(root, kind) {
   const campaign = kind === 'campaigns'; root.append(heading(titles[kind], campaign ? 'Set creator mentions, campaign rules, and captions in one place.' : 'Choose where your highlights come from and how they are captured.', button(campaign ? '+ Add campaign' : '+ Add source', () => editEntity(kind), 'primary')));
-  if (!campaign) root.append(notice('Enabled means configured to capture. A source may be offline. Save changes and apply them to update the running service.', 'info'));
+  if (!campaign) root.append(notice('Online status comes from fresh recorder activity. “Farming” means live footage is being recorded with chat detection enabled. Clip activity also includes queued and running work. Status refreshes automatically. Save and apply configuration changes to update capture.', 'info'));
   const search = document.createElement('input'); search.type = 'search'; search.placeholder = campaign ? 'Search campaigns…' : 'Search sources…'; search.setAttribute('aria-label', search.placeholder);
   const filters = append(node('div', 'filters'), search); const grid = node('div', 'card-grid'); root.append(filters, grid);
   function draw() {grid.replaceChildren(); Object.entries(state.config[kind]).filter(([name, value]) => `${name} ${value.url || value.creator_name}`.toLowerCase().includes(search.value.toLowerCase())).forEach(([name, value]) => grid.append(sourceCard(name, value, campaign))); if (!grid.children.length) grid.append(empty(search.value ? 'No matches found.' : campaign ? 'Create your first campaign.' : 'Connect your first source.', search.value ? 'Try another search.' : campaign ? 'Define how your clips should be captioned and delivered.' : 'Use a Twitch, YouTube, or Kick channel, or a finished video.'));}
@@ -181,13 +237,19 @@ function table(headers, rows) {const wrap = node('div', 'table-wrap'); const t =
 function statusBadge(status) {return badge(label(status), ['done', 'delivered', 'rendered'].includes(status) ? 'good' : status === 'failed' ? 'bad' : status === 'running' ? 'warn' : '');}
 function clipTable(root, clips) {
   if (!clips.length) {root.append(empty('The highlights are on their way.', 'Finished clips and their processing status will appear here.')); return;}
-  root.append(table(['Clip / source', 'Mode', 'Length', 'Score', 'Status', 'Created'], clips.map(c => [append(node('div'), node('div', '', c.source), node('small', 'muted', c.id)), label(c.mode), `${Math.round(c.end_ts - c.start_ts)}s`, c.score.toFixed(1), statusBadge(c.status), new Date(c.created_at * 1000).toLocaleString()])));
+  root.append(table(['Clip / source', 'Mode', 'Length', 'Score', 'Status', 'Created', 'Download'], clips.map(c => {
+    const actions = node('div', 'actions');
+    if (c.download_available) {const link = node('a', 'button subtle', 'Download MP4'); link.href = `/api/clips/${encodeURIComponent(c.id)}/download`; link.download = `${c.id}.mp4`; actions.append(link);}
+    if (c.drive_url) {const link = node('a', 'button subtle', 'Open Drive'); link.href = c.drive_url; link.target = '_blank'; link.rel = 'noopener noreferrer'; actions.append(link);}
+    if (!actions.children.length) actions.append(node('span', 'muted', 'Not available'));
+    return [append(node('div'), node('div', '', c.source), node('small', 'muted', c.id)), label(c.mode), `${Math.round(c.end_ts - c.start_ts)}s`, c.score.toFixed(1), statusBadge(c.status), new Date(c.created_at * 1000).toLocaleString(), actions];
+  })));
 }
 function activity(root, jobs) {
   const actions = append(node('div', 'actions'), button('Refresh', async () => {await refreshStatus(); draw();}, 'subtle'));
   if (jobs) actions.append(button('Retry failed jobs', async () => {if (!await ask('Retry all failed jobs?', 'Failed jobs will return to the queue with their attempt count reset.', 'Retry jobs')) return; try {const result = await api('retry', {}); toast(`${result.retried} jobs requeued.`); await refreshStatus(); draw();} catch (error) {toast(error.message, true);}}, 'subtle'));
   root.append(heading(jobs ? 'Job queue' : 'Your clips', jobs ? 'See what’s processing and retry jobs that need another attempt.' : 'A running history of the moments your sources have captured.', actions));
-  if (!jobs) root.append(notice('Finished files are saved to your configured delivery folder or Google Drive. This view shows processing history; it does not publish clips.', 'info'));
+  if (!jobs) root.append(notice('Download finished local videos with “Download MP4”. Google Drive deliveries open in Drive, where you can download them after signing in. Removed local files are marked unavailable.', 'info'));
   const filters = node('div', 'filters'); const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search recent history…'; search.setAttribute('aria-label', 'Search recent history'); const select = document.createElement('select'); select.setAttribute('aria-label', 'Filter by status'); ['all', ...(jobs ? ['queued', 'running', 'done', 'failed'] : ['pending', 'cut', 'rendered', 'delivered', 'failed', 'skipped'])].forEach(value => {const option = node('option', '', value === 'all' ? 'All statuses' : label(value)); option.value = value; select.append(option);}); append(filters, search, select); root.append(filters);
   const area = node('div'); root.append(area);
   function draw() {area.replaceChildren(); const records = (state.status?.[jobs ? 'jobs' : 'clips'] || []).filter(r => (select.value === 'all' || r.status === select.value) && `${r.id} ${r.type || r.source} ${r.error || ''}`.toLowerCase().includes(search.value.toLowerCase()));
@@ -210,14 +272,21 @@ function settings(root) {
   section.append(grid); root.append(section); root.append(notice('Changes are validated before saving. Apply saved settings from Overview to update the running service.', 'info'));
 }
 
-function editEntity(kind, oldName) {
+function editEntity(kind, oldName, duplicate = false) {
   const isSource = kind === 'sources'; const schema = state.schema.$defs[isSource ? 'SourceCfg' : 'CampaignCfg'];
   const data = oldName ? clone(state.config[kind][oldName]) : defaults(schema);
-  if (!oldName && isSource) {data.mode = 'live'; data.platform = 'twitch'; data.url = ''; data.campaigns = Object.keys(state.config.campaigns).slice(0, 1);}
-  const nameObj = {name: oldName || ''}; const fields = $('#editor-fields'); fields.replaceChildren();
-  $('#editor-title').textContent = `${oldName ? 'Edit' : 'Add'} ${isSource ? 'source' : 'campaign'}`; $('#editor-kind').textContent = isSource ? 'CONNECT YOUR CONTENT' : 'SET YOUR CAMPAIGN RULES';
+  let copiedName = '';
+  if (duplicate) {
+    copiedName = `${oldName}_copy`; let suffix = 2;
+    while (state.config[kind][copiedName]) copiedName = `${oldName}_copy_${suffix++}`;
+    oldName = undefined;
+  }
+  if (!oldName && !duplicate && isSource) {data.mode = 'live'; data.platform = 'twitch'; data.url = ''; data.campaigns = Object.keys(state.config.campaigns).slice(0, 1);}
+  const nameObj = {name: copiedName || oldName || ''}; const fields = $('#editor-fields'); fields.replaceChildren();
+  $('#editor-title').textContent = `${duplicate ? 'Duplicate' : oldName ? 'Edit' : 'Add'} ${isSource ? 'source' : 'campaign'}`; $('#editor-kind').textContent = isSource ? 'CONNECT YOUR CONTENT' : 'SET YOUR CAMPAIGN RULES';
+  if (duplicate) fields.append(notice(isSource ? 'All source settings have been copied. Change the name, URL, language, and campaign assignment for the new streamer.' : 'Campaign rules have been copied. Change the name, creator mention, and hashtags for the new streamer. Existing sources keep their original campaign.', 'info'));
   const primary = node('div', 'form-grid'); primary.append(field('name', {type: 'string', description: 'Letters, numbers, underscores, and hyphens. Example: my_channel'}, nameObj, () => {}));
-  const basics = isSource ? ['enabled', 'mode', 'platform', 'url', 'campaigns', 'language'] : ['creator_name', 'required_hashtags', 'extra_hashtags', 'min_seconds', 'max_seconds', 'allowed_platforms', 'notes'];
+  const basics = isSource ? ['enabled', 'mode', 'platform', 'url', 'campaigns', 'language'] : ['creator_name', 'caption_language', 'required_hashtags', 'extra_hashtags', 'min_seconds', 'max_seconds', 'allowed_platforms', 'notes'];
   fillFields(primary, schema, data, () => {}, {only: basics, campaigns: true}); fields.append(primary);
   const advanced = node('details'); advanced.append(node('summary', '', isSource ? 'Capture, layout & advanced options' : 'Caption & advanced options')); const more = node('div', 'form-grid'); fillFields(more, schema, data, () => {}, {omit: basics}); advanced.append(more); fields.append(advanced);
   const errorArea = node('div'); fields.append(errorArea); const dialog = $('#editor'); dialog.showModal();
@@ -236,6 +305,7 @@ function editEntity(kind, oldName) {
 
 function render() {
   if (!state.config) return;
+  const oldLogs = $('#service-logs'); if (oldLogs) state.logScrollTop = oldLogs.scrollTop;
   const page = location.hash.slice(1); state.page = titles[page] ? page : 'overview'; $('#breadcrumb').textContent = titles[state.page];
   $$('nav a').forEach(a => {a.classList.toggle('active', a.dataset.page === state.page); if (a.dataset.page === state.page) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');});
   const root = $('#main'); root.replaceChildren();
@@ -245,9 +315,20 @@ function render() {
   else activity(root, state.page === 'jobs');
 }
 async function refreshStatus() {
-  try {state.status = await api('status'); const el = $('#connection'); const s = state.status; el.textContent = state.busy ? 'Updating service' : s.healthy ? 'Service running' : s.running ? 'Starting / checking heartbeat' : s.external ? 'External service' : s.exit_code !== null && s.exit_code !== 0 ? 'Service exited' : 'Service stopped'; el.className = `badge ${s.healthy ? 'good' : s.exit_code ? 'bad' : ''}`;
+  try {const status = await api('status');
+    if (state.containerRestarting && state.status?.instance_id !== status.instance_id) {
+      // A restarted server has a new CSRF token. Refresh it before the next edit.
+      state.csrf = (await api('config')).csrf; state.containerRestarting = false; toast('Container restarted. The panel is connected again.');
+    }
+    state.status = status; const el = $('#connection'); const s = state.status; el.textContent = state.containerRestarting ? 'Restarting container…' : state.busy ? 'Updating service' : s.healthy ? 'Service running' : s.running ? 'Starting / checking heartbeat' : s.external ? 'External service' : s.exit_code !== null && s.exit_code !== 0 ? 'Service exited' : 'Service stopped'; el.className = `badge ${s.healthy ? 'good' : s.exit_code ? 'bad' : ''}`;
     if (state.page === 'overview' && !$('#confirm').open && !$('#editor').open) render();
-  } catch (error) {$('#connection').textContent = 'Connection lost'; $('#connection').className = 'badge bad';}
+    if (state.page === 'sources') {
+      $$('article[data-source]').forEach(card => {
+        const name = card.dataset.source; const src = state.config.sources[name];
+        if (src) {card.querySelector('.runtime-badges')?.replaceWith(runtimeBadges(name, src)); card.querySelector('.source-runtime')?.replaceWith(runtimeDetails(name));}
+      });
+    }
+  } catch (error) {$('#connection').textContent = state.containerRestarting ? 'Restarting container…' : 'Connection lost'; $('#connection').className = 'badge bad';}
 }
 async function load() {
   const result = await api('config'); state.config = result.config; state.schema = result.schema; state.csrf = result.csrf; state.revision = result.revision; state.warnings = result.warnings; state.exists = result.exists; state.dirty = false; $('#savebar').hidden = true; render();

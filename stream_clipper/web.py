@@ -20,12 +20,13 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 import yaml
 
 from .config import AppConfig, ConfigError, load_config, parse_config
 from .queue import JobQueue
+from .web_activity import clip_file, drive_link, source_activity
 
 
 def revision(path: Path) -> str:
@@ -191,7 +192,8 @@ class WebApp:
                       "healthy": running and age is not None and age < 90,
                       "exit_code": self.process.poll() if self.process else None,
                       "restart_required": running and self.active_revision != revision(self.path),
-                      "counts": {}, "jobs": [], "clips": [], "clip_count": 0, "database_error": None}
+                      "counts": {}, "jobs": [], "clips": [], "clip_count": 0,
+                      "sources": {}, "database_error": None}
             path = Path(cfg.g.data_dir) / "state.db"
             if path.exists():
                 try:
@@ -205,8 +207,18 @@ class WebApp:
                         result["jobs"] = [dict(r) for r in conn.execute(
                             "SELECT id, type, status, attempts, max_attempts, error FROM jobs ORDER BY id DESC LIMIT 100")]
                         result["clips"] = [dict(r) for r in conn.execute(
-                            "SELECT id, source, mode, status, score, start_ts, end_ts, created_at "
+                            "SELECT id, source, mode, status, score, start_ts, end_ts, created_at, meta "
                             "FROM clips ORDER BY created_at DESC LIMIT 100")]
+                        for clip in result["clips"]:
+                            deliveries = [dict(row) for row in conn.execute(
+                                "SELECT link FROM deliveries WHERE clip_id=?", (clip["id"],))]
+                            meta = json.loads(clip.pop("meta"))
+                            clip["download_available"] = clip["status"] in ("rendered", "delivered") and bool(
+                                clip_file(cfg, clip["id"], meta, deliveries))
+                            clip["drive_url"] = drive_link(deliveries)
+                        result["sources"] = source_activity(
+                            conn, cfg, alive=bool((running or result["external"]) and age is not None and age < 90),
+                            pid=getattr(self.process, "pid", None) if running else None)
                     finally:
                         conn.close()
                 except sqlite3.Error as exc:
@@ -214,6 +226,24 @@ class WebApp:
             with self.log_lock:
                 result["logs"] = list(self.logs)
             return result
+
+    def download_path(self, clip_id: str) -> Path | None:
+        with self.lock:
+            cfg = self.active_config or load_config(self.path)
+            path = Path(cfg.g.data_dir) / "state.db"
+            if not path.exists():
+                return None
+            conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=3)
+            conn.row_factory = sqlite3.Row
+            try:
+                clip = conn.execute("SELECT meta, status FROM clips WHERE id=?", (clip_id,)).fetchone()
+                if clip is None or clip["status"] not in ("rendered", "delivered"):
+                    return None
+                deliveries = [dict(row) for row in conn.execute(
+                    "SELECT link FROM deliveries WHERE clip_id=?", (clip_id,))]
+                return clip_file(cfg, clip_id, json.loads(clip["meta"]), deliveries)
+            finally:
+                conn.close()
 
     def retry(self, job_id):
         with self.lock:
@@ -231,9 +261,13 @@ class WebApp:
 class WebServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, app, *, password="", allowed_hosts=(), skip_host_check=False):
+    def __init__(self, address, app, *, password="", allowed_hosts=(), skip_host_check=False,
+                 allow_container_restart=False):
         self.app, self.password = app, password
         self.skip_host_check = skip_host_check
+        self.allow_container_restart = allow_container_restart
+        self.instance_id = secrets.token_hex(16)
+        self.container_restarting = threading.Event()
         self.allowed_hosts = {"localhost", "127.0.0.1", "::1", *allowed_hosts}
         if not skip_host_check:
             for rule in self.allowed_hosts:
@@ -294,11 +328,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         try:
-            if path == "/api/config":
+            download = re.fullmatch(r"/api/clips/([^/]+)/download", path)
+            if download:
+                self.download_clip(unquote(download[1]))
+            elif path == "/api/config":
                 self.send_data(self.server.app.config() | {"csrf": self.server.app.csrf,
                                                           "schema": AppConfig.model_json_schema(by_alias=True)})
             elif path == "/api/status":
-                self.send_data(self.server.app.status())
+                self.send_data(self.server.app.status() | {
+                    "container_restart_available": self.server.allow_container_restart,
+                    "instance_id": self.server.instance_id,
+                })
             elif path in ("/", "/app.js", "/style.css"):
                 filename = {"/": "index.html", "/app.js": "app.js", "/style.css": "style.css"}[path]
                 mime = {"/": "text/html; charset=utf-8", "/app.js": "text/javascript; charset=utf-8",
@@ -308,6 +348,30 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_data({"error": "Not found"}, 404)
         except (ConfigError, OSError) as exc:
             self.send_data({"error": str(exc)}, 400)
+
+    def download_clip(self, clip_id):
+        path = self.server.app.download_path(clip_id)
+        if path is None:
+            self.send_data({"error": "Clip file is no longer available locally."}, 404)
+            return
+        try:
+            source = path.open("rb")
+        except FileNotFoundError:
+            self.send_data({"error": "Clip file was removed. Refresh clip history."}, 404)
+            return
+        with source:
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(os.fstat(source.fileno()).st_size))
+            self.send_header("Content-Disposition", "attachment; filename=\"clip.mp4\"; filename*=UTF-8''" + quote(path.name, safe=""))
+            self.send_header("Cache-Control", "private, no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            try:
+                while chunk := source.read(64 * 1024):
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def do_POST(self):
         if not self.authorized():
@@ -323,6 +387,8 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise ValueError("Request must be an object")
             app = self.server.app
+            if self.server.container_restarting.is_set():
+                raise ConflictError("Container is restarting. Wait for the panel to reconnect.")
             if self.path == "/api/config":
                 self.send_data(app.save(body["config"], body["revision"]))
             elif self.path == "/api/validate":
@@ -345,6 +411,15 @@ class Handler(BaseHTTPRequestHandler):
                 if job_id is not None and (type(job_id) is not int or job_id < 1):
                     raise ValueError("Invalid job ID")
                 self.send_data({"retried": app.retry(job_id)})
+            elif self.path == "/api/container/restart":
+                if not self.server.allow_container_restart:
+                    self.send_data({"error": "Container restart is only available in the Docker deployment."}, 403)
+                    return
+                self.server.container_restarting.set()
+                self.send_data({"ok": True}, 202)
+                # serve() drains the supervisor before exiting; Docker's restart
+                # policy then starts this same container again. No Docker socket.
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
             else:
                 self.send_data({"error": "Not found"}, 404)
         except ConflictError as exc:
@@ -361,7 +436,8 @@ def serve(args):
         raise ConfigError("Set CLIPPER_WEB_PASSWORD before enabling remote hosts (login: admin).")
     app = WebApp(args.config, record_chat=args.record_chat)
     server = WebServer((args.host, args.port), app, password=password, allowed_hosts=hosts,
-                       skip_host_check=skip_host_check)
+                       skip_host_check=skip_host_check,
+                       allow_container_restart=env_flag("CLIPPER_WEB_CONTAINER"))
     def shutdown(signum, frame):
         threading.Thread(target=server.shutdown, daemon=True).start()
     for sig in (signal.SIGINT, signal.SIGTERM):

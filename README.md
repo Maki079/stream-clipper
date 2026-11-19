@@ -41,8 +41,10 @@ repository. Shell examples use Bash.
    mkdir -p config data buffer models output rclone
    ```
 
-   The container runs as UID/GID `1000:1000`; these directories must be writable
-   by that account. Compose currently sets resource limits for a large CPU server
+   Container startup automatically fixes ownership and owner read/write access
+   on its mounted application directories, then runs as UID/GID `1000:1000`.
+   This also repairs existing root-owned files from older installations.
+   Compose currently sets resource limits for a large CPU server
    (15 CPUs / 40 GB for clipper, 8 CPUs / 12 GB for Ollama). Adjust the limits in
    `docker-compose.yml` for your machine.
 
@@ -156,10 +158,10 @@ in-place update, restore the previous source version and your backed-up
 
 | Page | What you can do |
 | --- | --- |
-| **Overview** | Check service status, recent clips, queue totals, and recent service logs. Start or stop clipping and apply saved settings. |
-| **Sources** | Add, edit, enable, pause, or delete stream and video sources; assign campaigns. |
-| **Campaigns** | Manage creator mentions, hashtags, clip lengths, caption rules, and campaign notes. |
-| **Clips** | Inspect recent clip history and processing status. Retrieve videos from your delivery folder or Google Drive. |
+| **Overview** | View only online streams farming clips, their production stats, recent clips, and activity logs. Control capture or restart the Docker container. |
+| **Sources** | See online status and clip production for every source. Add, duplicate, edit, enable, pause, or delete sources and assign campaigns. |
+| **Campaigns** | Copy campaigns and manage creator mentions, hashtags, lengths, rules, and language using a selector. |
+| **Clips** | Inspect history and download completed local MP4 files. Open Google Drive deliveries to download them there. |
 | **Job queue** | Inspect recent jobs and errors, refresh history, and retry failed jobs. |
 | **Settings** | Configure video, subtitles, motion, transcription, AI judging, delivery, notifications, workers, and storage. |
 
@@ -179,6 +181,72 @@ Stopping the entire Compose stack also closes the panel.
 
 The panel detects conflicting saves from another session. Reload to get the latest
 settings before editing again.
+
+### Live status, production stats, and logs
+
+Overview shows streams only while fresh video is being recorded and chat-based
+clip detection is enabled. Sources lists all configured sources, with online,
+offline/reconnecting, paused, and processing states. “Capturing a clip” means a
+clip window is open; “Making clips” means production jobs are running. Online
+does not mean a clip is being rendered at every moment.
+
+Recorder status updates about every five seconds and the panel polls every six
+seconds. Status older than 20 seconds is treated as unknown. Overview’s captured
+and delivered totals cover the last 24 hours for the streams currently farming;
+production job counts are current. Individual source cards show the same counters.
+
+Activity logs open at the newest entries. Scroll up to pause following, or enable
+**Follow latest** to return to the bottom. Automatic refresh preserves your
+position when reading older entries.
+
+Source and campaign language fields use named language selectors. Source language
+controls transcription and supports automatic detection. Campaign language keeps
+the existing caption-language setting; selecting it does not translate existing
+captions or change the source’s spoken language.
+
+### Copy a streamer setup
+
+In **Sources**, click **Duplicate** on the source you want to reuse. The editor
+copies all settings, including layout, detection thresholds, language, and campaign
+assignments. Change the proposed name, source URL, and language, then click
+**Keep changes → Save changes**. Apply the settings from Overview when ready.
+The original source stays unchanged. Canceling the editor creates nothing.
+
+You can also click **Duplicate** in **Campaigns** to reuse caption and clip-length
+rules. Update the creator mention and hashtags, then assign the new campaign to
+your copied source. Copying a source initially retains its original campaigns.
+
+### Restart capture or its container
+
+- **Restart capture** on Overview restarts the capture supervisor and workers
+  while leaving the panel running.
+- **Restart container** restarts the Docker `clipper` container that runs capture,
+  workers, and the panel. Save or discard edits first, then confirm the restart.
+  Running work gets time to finish, and the panel reconnects automatically with
+  a fresh session token. Allow up to two minutes. Saved settings load on startup.
+
+Container restart uses the Compose `restart: unless-stopped` policy; keep that
+policy enabled. It does not restart Ollama and does not require mounting the Docker
+socket. The button is only available when running through the Docker entrypoint.
+
+### Automatic folder permissions
+
+Rebuild once to install the updated startup behavior:
+
+```bash
+docker compose up -d --build
+```
+
+Each clipper startup prepares `/config`, `/data`, `/buffer`, `/models`, and `/output`,
+including existing files and the rclone mount under `/config`. It changes ownership
+to UID/GID `1000:1000` and adds missing owner permissions; it does not make files
+world-writable or follow symbolic links. The application then runs without root
+privileges. The first startup can take longer with many cached models or clips.
+
+Read-only mounts and filesystems that prohibit ownership changes need to be
+configured on the host. A custom Compose `user:` override skips the root setup;
+with such an override, provide writable directories yourself. Custom storage mounts
+outside the standard paths also need their permissions configured separately.
 
 ## Open the panel on a remote server
 
@@ -291,8 +359,12 @@ With local delivery, finished files appear in `output/<campaign>/<YYYY-MM-DD>/`:
 | `<clip>.<campaign>.txt` | Caption and campaign notes |
 | `<clip>.json` | Source, timing, score, and other clip metadata |
 
-Review captions marked `!!! DO NOT POST AS IS` and fix the campaign requirements
-before posting. The panel shows history; it does not play or download video files.
+Review captions marked `!!! DO NOT POST AS IS` and fix campaign requirements
+before posting. Use **Download MP4** in Clips or Overview’s recent clips to save
+a completed local video. Downloads require the same panel login and host access
+as other pages. Files removed from disk become unavailable. **Open Drive** opens
+the private Google Drive delivery; sign in there to download it. A clip retained
+in the work directory can also be downloaded after rendering, until cleanup.
 
 | Host directory | Purpose |
 | --- | --- |
@@ -324,7 +396,7 @@ Docker logs cover the web process and container startup.
 | Panel will not open | Confirm the clipper container is running and port 8080 is available. For remote servers, use the SSH tunnel above. |
 | “Host not allowed” | Configure `CLIPPER_WEB_HOSTS`, or set `CLIPPER_WEB_SKIP_HOST_CHECK=true` in `.env` to [disable host verification](#disable-host-verification-completely). Recreate the container after changes. |
 | Container exits during migration | Inspect Docker logs and run `validate-config`; existing configurations are validated before autostart. |
-| Settings cannot be saved / permission denied | Ensure bind-mounted directories are writable by UID/GID `1000:1000`. On a dedicated Linux installation, an administrator can set ownership with `sudo chown -R 1000:1000 config data buffer models output rclone`. |
+| Settings cannot be saved / permission denied | Rebuild to use [automatic folder permissions](#automatic-folder-permissions). If startup cannot repair a mount, check for read-only mounts, unsupported ownership changes, or a custom `user:` override. |
 | Panel says another service is running | Stop the old Docker, systemd, or CLI service. A recent heartbeat can remain for up to 90 seconds after an unexpected exit. |
 | Saved settings have no effect | Choose **Apply & restart** from Overview. |
 | Source produces no clips | Confirm it is enabled, live or accessible, and assigned a campaign. Inspect service logs and the [spike tuning guide](docs/advanced.md#live-spike-detection). |
