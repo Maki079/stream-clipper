@@ -11,7 +11,7 @@ import pytest
 from stream_clipper import db
 from stream_clipper.config import ConfigError, load_config
 from stream_clipper.queue import JobQueue
-from stream_clipper.web import ConflictError, WebApp, WebServer
+from stream_clipper.web import ConflictError, WebApp, WebServer, host_allowed
 
 
 @pytest.fixture
@@ -175,3 +175,70 @@ def test_http_password_host_and_health(server):
     assert request(server, "/health")[0] == 200
     server.allowed_hosts.add("clipper.example")
     assert request(server, "/api/status", headers=auth | {"Host": "clipper.example"})[0] == 200
+
+
+@pytest.mark.parametrize("rule,host,expected", [
+    ("clipper.example.com", "CLIPPER.EXAMPLE.COM.", True),
+    ("*.example.com", "clipper.example.com", True),
+    ("*.example.com", "studio.dev.example.com", True),
+    ("*.EXAMPLE.com.", "CLIPPER.example.COM", True),
+    ("*.example.com", "example.com", False),
+    ("*.example.com", "notexample.com", False),
+    ("*.example.com", "example.com.evil.test", False),
+    ("*.example.com", ".example.com", False),
+    ("*.example.com", "x..example.com", False),
+    ("192.168.1.0/24", "192.168.1.0", True),
+    ("192.168.1.0/24", "192.168.1.255", True),
+    ("192.168.1.10/24", "192.168.1.200", True),
+    ("192.168.1.0/24", "192.168.2.1", False),
+    ("192.168.1.0/24", "clipper.example.com", False),
+    ("192.168.1.0/24", "::ffff:192.168.1.1", False),
+    ("fd00::/8", "fd12:3456::1", True),
+    ("fd00::/8", "fe80::1", False),
+    ("fd00::/8", "192.168.1.1", False),
+    ("2001:db8::1", "2001:0db8:0:0:0:0:0:1", True),
+    ("0.0.0.0/0", "203.0.113.1", True),
+    ("::/0", "2001:db8::1", True),
+    ("example.com", None, False),
+])
+def test_host_matching(rule, host, expected):
+    assert host_allowed(host, [rule]) is expected
+
+
+@pytest.mark.parametrize("rule", [
+    "*", "example.*", "clip*.example.com", "*.*.example.com", "*.192.168.1.1",
+    "https://example.com", "example.com:8080", "example.com/path", "user@example.com",
+    "192.168.1.0/33", "fd00::/129", "bad network/24", "example..com", "fe80::1%eth0",
+])
+def test_invalid_host_rules_rejected_at_startup(app, rule):
+    with pytest.raises(ConfigError, match="Invalid CLIPPER_WEB_HOSTS entry"):
+        WebServer(("127.0.0.1", 0), app, password="test", allowed_hosts=[rule])
+
+
+@pytest.mark.parametrize("host,expected", [
+    ("clipper.example.com:8080", 200),
+    ("STUDIO.DEV.EXAMPLE.COM.:8080", 200),
+    ("example.com", 403),
+    ("notexample.com", 403),
+    ("example.com.evil.test", 403),
+    ("192.168.1.42:8080", 200),
+    ("192.168.2.42", 403),
+    ("[fd12:3456::1]:8080", 200),
+    ("[fe80::1]", 403),
+    ("attacker.test@clipper.example.com", 403),
+    ("clipper.example.com/path", 403),
+    ("clipper.example.com:invalid", 403),
+])
+def test_http_wildcards_cidr_and_host_header_validation(server, host, expected):
+    server.allowed_hosts.update(["*.example.com", "192.168.1.0/24", "fd00::/8"])
+    assert request(server, "/api/status", headers={"Host": host})[0] == expected
+
+
+def test_wildcard_does_not_bypass_password_or_csrf(server):
+    server.allowed_hosts.add("*.example.com")
+    server.password = "test"
+    headers = {"Host": "clipper.example.com"}
+    assert request(server, "/api/config", headers=headers)[0] == 401
+    headers["Authorization"] = "Basic " + base64.b64encode(b"admin:test").decode()
+    assert request(server, "/api/config", headers=headers)[0] == 200
+    assert request(server, "/api/retry", {}, headers)[0] == 403

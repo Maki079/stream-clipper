@@ -26,6 +26,9 @@ have permission to clip, and enter each campaign’s requirements before posting
 For YAML keys, Google Drive authorization, notifications, crop layouts, AI scoring,
 and highlight tuning, see the [advanced guide](docs/advanced.md).
 
+To configure panel login or allowed hostnames, see [Configure .env](#configure-env)
+and the supplied [.env.example](.env.example).
+
 ## New installation
 
 You need Git, Docker, and Docker Compose. Docker is recommended on Windows; the
@@ -187,18 +190,73 @@ ssh -L 8080:localhost:8080 user@your-server
 
 Keep that connection open and visit **http://localhost:8080** on your computer.
 
-For direct access through a domain or server IP:
+### Configure .env
 
-- Set `CLIPPER_WEB_PASSWORD` to a password and `CLIPPER_WEB_HOSTS` to the allowed
-  hostnames/IPs, separated by commas, without schemes or ports.
-- Change the Compose port binding for your intended interface or reverse proxy.
-- Use an HTTPS reverse proxy. The panel’s Basic authentication does not encrypt
-  HTTP traffic.
-- Recreate the container with `docker compose up -d`. Sign in as **admin** using
-  the configured password.
+Set `CLIPPER_WEB_HOSTS` and `CLIPPER_WEB_PASSWORD` in a file named **`.env` in the
+project root, beside `docker-compose.yml`**. These are deployment settings, not
+fields in `config/config.yaml` or the panel’s Settings page.
 
-You can also set `CLIPPER_WEB_PASSWORD` for localhost access. Keep credentials
-outside Git, for example in your deployment environment.
+1. Copy the provided template. If `.env` already exists, edit it instead:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. For direct access through a domain or server IP, edit `.env`:
+
+   ```dotenv
+   CLIPPER_WEB_PASSWORD='replace-with-your-own-strong-password'
+   CLIPPER_WEB_HOSTS=clipper.example.com,*.example.com,192.168.1.0/24,fd00::/8
+   ```
+
+   Replace these examples with your password and the hostname/IP you enter in
+   your browser. Separate multiple hosts with commas. Do not include `http://`,
+   `https://`, ports, or URL paths. A nonempty host list requires a password.
+   Localhost is always allowed; leave the hosts field empty for SSH tunnel access.
+   You can set a password alone to require login on localhost.
+
+3. For direct network access, change the clipper port mapping in
+   `docker-compose.yml` from `"127.0.0.1:8080:8080"` to `"8080:8080"`, or bind it
+   to your intended interface. Keep the localhost binding if using an SSH tunnel
+   or a reverse proxy running on the same host. Use HTTPS through a reverse proxy
+   for direct remote access: Basic authentication does not encrypt HTTP traffic.
+
+4. Apply environment and port changes by recreating the container:
+
+   ```bash
+   docker compose up -d
+   ```
+
+   Open the configured address and sign in as **admin** using your password.
+   A plain `docker compose restart` does not apply changed environment variables.
+
+Docker Compose reads `.env` automatically. Exported shell variables with the same
+names take precedence. When running `stream-clipper ... web` directly without
+Compose, export these variables yourself; the Python application does not load
+`.env` files.
+
+The `.env` file is ignored by Git. Keep it private, and copy it separately when
+migrating to a new checkout. The [.env.example](.env.example) template contains no
+credentials and documents both variables.
+
+Supported host rules can be mixed in the same comma-separated list:
+
+| Rule | Matches |
+| --- | --- |
+| `clipper.example.com` | That exact hostname (case-insensitive) |
+| `*.example.com` | Subdomains such as `clipper.example.com` and `studio.dev.example.com`; add `example.com` separately to allow the root domain |
+| `192.168.1.100` | That exact IPv4 address |
+| `192.168.1.0/24` | Literal IPv4 hosts within that network |
+| `fd00::/8` | Literal IPv6 hosts within that network |
+
+Only a leading `*.` wildcard is supported; bare `*` and other glob patterns are
+rejected at startup. IPv6 entries have no brackets in `.env`; browser URLs use
+brackets, for example `http://[fd00::1]:8080`. CIDR host bits are normalized, so
+`192.168.1.10/24` means `192.168.1.0/24`.
+
+These rules check the **HTTP Host header**, not the connecting client’s address.
+DNS names are not resolved for CIDR matching. Use firewall or reverse proxy rules
+to restrict which client networks can connect.
 
 ## Find your clips and persistent data
 

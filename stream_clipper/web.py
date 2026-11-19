@@ -4,8 +4,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
+import re
 import secrets
 import signal
 import sqlite3
@@ -32,6 +34,59 @@ def revision(path: Path) -> str:
 
 class ConflictError(Exception):
     pass
+
+
+def normalize_host(host: str) -> str:
+    """Canonicalize an IP literal or DNS hostname, without resolving DNS."""
+    host = host.removesuffix(".").lower()
+    if "%" in host:
+        raise ValueError("IPv6 scope identifiers are not supported")
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        host = host.encode("idna").decode("ascii")
+        if len(host) > 253 or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part)
+                                     for part in host.split(".")):
+            raise ValueError("invalid hostname")
+        return host
+
+
+def parse_host_rule(rule: str):
+    try:
+        rule = rule.strip()
+        if "/" in rule:
+            return "network", ipaddress.ip_network(rule, strict=False)
+        if rule.startswith("*."):
+            suffix = normalize_host(rule[2:])
+            try:
+                ipaddress.ip_address(suffix)
+            except ValueError:
+                return "subdomain", suffix
+            raise ValueError("wildcards require a DNS domain")
+        return "exact", normalize_host(rule)
+    except (ValueError, UnicodeError) as exc:
+        raise ConfigError(f"Invalid CLIPPER_WEB_HOSTS entry {rule!r}: {exc}. "
+                          "Use a hostname, IP address, *.example.com, or IPv4/IPv6 CIDR.") from None
+
+
+def host_allowed(host: str | None, rules) -> bool:
+    try:
+        host = normalize_host(host or "")
+    except (ValueError, UnicodeError):
+        return False
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    for rule in rules:
+        kind, value = parse_host_rule(rule)
+        if kind == "exact" and host == value:
+            return True
+        if kind == "subdomain" and host.endswith("." + value):
+            return True
+        if kind == "network" and address is not None and address in value:
+            return True
+    return False
 
 
 class WebApp:
@@ -170,6 +225,8 @@ class WebServer(ThreadingHTTPServer):
     def __init__(self, address, app, *, password="", allowed_hosts=()):
         self.app, self.password = app, password
         self.allowed_hosts = {"localhost", "127.0.0.1", "::1", *allowed_hosts}
+        for rule in self.allowed_hosts:
+            parse_host_rule(rule)
         super().__init__(address, Handler)
 
 
@@ -193,10 +250,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def authorized(self):
         try:
-            host = urlsplit("//" + self.headers.get("Host", "")).hostname
+            headers = self.headers.get_all("Host", [])
+            if len(headers) != 1 or any(char.isspace() for char in headers[0]):
+                raise ValueError("Invalid Host header")
+            authority = urlsplit("//" + headers[0])
+            # Accept only a host with an optional port, never a URL or userinfo.
+            if authority.username is not None or authority.path or authority.query or authority.fragment:
+                raise ValueError("Invalid Host header")
+            authority.port  # validate the optional port
+            host = authority.hostname
         except ValueError:
             host = None
-        if host not in self.server.allowed_hosts:
+        if not host_allowed(host, self.server.allowed_hosts):
             self.send_data({"error": "Host not allowed. Configure CLIPPER_WEB_HOSTS for remote access."}, 403)
             return False
         if self.server.password:

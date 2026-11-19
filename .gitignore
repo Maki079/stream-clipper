@@ -12,5 +12,6 @@ __pycache__/
 /dist/
 
 # secrets / local settings (copy from config/config.example.yaml)
+/.env
 /config/config.yaml
 .clipper-active-*.yaml
