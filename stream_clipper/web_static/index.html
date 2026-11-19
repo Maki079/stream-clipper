@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Manage your streams, discover highlights, and keep your clipping workflow running.">
+  <title>Stream Clipper · Studio</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><span class="brand-icon">✂</span><span>streamclip<span class="brand-sub">CREATOR STUDIO</span></span></a>
+    <div class="nav-label">WORKSPACE</div>
+    <nav aria-label="Main navigation">
+      <a href="#overview" data-page="overview"><span aria-hidden="true">◫</span>Overview</a>
+      <a href="#sources" data-page="sources"><span aria-hidden="true">◉</span>Sources</a>
+      <a href="#campaigns" data-page="campaigns"><span aria-hidden="true">⚑</span>Campaigns</a>
+      <a href="#clips" data-page="clips"><span aria-hidden="true">▤</span>Clips</a>
+      <a href="#jobs" data-page="jobs"><span aria-hidden="true">☷</span>Job queue</a>
+      <a href="#settings" data-page="settings"><span aria-hidden="true">⚙</span>Settings</a>
+    </nav>
+    <div class="sidebar-bottom"><div class="local-badge">YOUR WORKSPACE</div><p>From stream to standout.</p><small>Live moments. Ready to share.</small></div>
+  </aside>
+  <div class="workspace">
+    <header class="topbar"><div>Workspace <span class="slash">/</span> <span id="breadcrumb">Overview</span></div><div class="top-actions"><span id="connection" class="badge">Connecting</span><span class="avatar" aria-label="Local administrator">SC</span></div></header>
+    <main id="main" tabindex="-1"><div class="empty">Loading your workspace…</div></main>
+    <footer>STREAM CLIPPER <span>Made for the moments that matter.</span></footer>
+  </div>
+  <div id="savebar" class="savebar" hidden><div><strong>Unsaved changes</strong><span>Save your edits, then apply when you’re ready.</span></div><button class="button subtle" id="discard">Discard</button><button class="button primary" id="save">Save changes</button></div>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+  <dialog id="editor" aria-labelledby="editor-title"><form id="editor-form"><div class="dialog-header"><div><div class="eyebrow" id="editor-kind">SOURCE DETAILS</div><h2 id="editor-title">Edit source</h2></div><button class="icon-button" type="button" id="close-editor" aria-label="Close editor">×</button></div><div id="editor-fields"></div><div class="dialog-footer"><button class="button subtle" type="button" id="cancel-editor">Cancel</button><button class="button primary" type="submit">Keep changes</button></div></form></dialog>
+  <dialog id="confirm" aria-labelledby="confirm-title"><h2 id="confirm-title">Confirm action</h2><p id="confirm-message"></p><div class="dialog-footer"><button class="button subtle" id="confirm-no">Cancel</button><button class="button primary" id="confirm-yes">Continue</button></div></dialog>
+</body>
+</html>

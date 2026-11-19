@@ -29,6 +29,9 @@ stream-clipper = "stream_clipper.cli:main"
 [tool.setuptools.packages.find]
 include = ["stream_clipper*"]
 
+[tool.setuptools.package-data]
+stream_clipper = ["web_static/*.html", "web_static/*.css", "web_static/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

@@ -177,6 +177,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-c", "--config", default=DEFAULT_CONFIG, help=f"config file (default {DEFAULT_CONFIG})")
     sub = p.add_subparsers(dest="cmd", required=True)
 
+    s = sub.add_parser("web", help="open the web interface for configuration and service management")
+    s.add_argument("--host", default="127.0.0.1", help="bind address (default: loopback only)")
+    s.add_argument("--port", type=int, default=8080)
+    s.add_argument("--autostart", action="store_true", help="start clipping if a configuration already exists")
+    s.add_argument("--record-chat", action="store_true", help="save live chat while the managed service runs")
+    def cmd_web(args):
+        from .web import serve
+
+        return serve(args)
+    s.set_defaults(fn=cmd_web)
+
     s = sub.add_parser("run", help="run the service (live recorders, VOD watcher, workers)")
     s.add_argument("--record-chat", action="store_true", help="also save all chat to data/chatlogs/<source>.jsonl")
     s.set_defaults(fn=cmd_run)

@@ -4,11 +4,21 @@ services:
     image: stream-clipper:latest
     container_name: stream-clipper
     restart: unless-stopped
-    command: ["run", "--record-chat"]
+    command: ["web", "--host", "0.0.0.0", "--autostart", "--record-chat"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     depends_on: [ollama]   # chat logs in data/chatlogs/ for tuning; remove the flag later
-    stop_grace_period: 60s          # running renders get time to finish; the rest is requeued
+    stop_grace_period: 90s          # web process waits for the supervisor to finish running work
     environment:
       - TZ=Europe/Bratislava
+      - CLIPPER_WEB_PASSWORD=${CLIPPER_WEB_PASSWORD:-}
+      - CLIPPER_WEB_HOSTS=${CLIPPER_WEB_HOSTS:-}
     volumes:
       - ./config:/config            # config.yaml
       - ./rclone:/config/rclone     # rclone.conf (Google Drive OAuth), only needed for delivery.backend: rclone
@@ -25,7 +35,7 @@ services:
       driver: json-file
       options: {max-size: "50m", max-file: "5"}
 
-  # Local LLM (free, offline): rates live clips, picks the cut, writes the hook title (README section 3c).
+  # Local LLM: rates live clips, picks the cut, writes the hook (docs/advanced.md#ai-highlight-judge).
   # The model (global.llm.model, ~3 GB) is pulled automatically on first start into models/ollama.
   # Without it (global.llm.enabled: false) clips are rendered exactly as planned.
   ollama:
