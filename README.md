@@ -200,9 +200,18 @@ Activity logs open at the newest entries. Scroll up to pause following, or enabl
 position when reading older entries.
 
 Source and campaign language fields use named language selectors. Source language
-controls transcription and supports automatic detection. Campaign language keeps
-the existing caption-language setting; selecting it does not translate existing
-captions or change the source’s spoken language.
+controls transcription and supports automatic detection. New clip descriptions
+and AI hook titles follow the configured source language, or the detected speech
+language when detection is automatic. Campaign caption language is a fallback
+when neither is available; an old campaign value of `en` does not force a Polish
+stream’s captions into English.
+
+Built-in caption hooks are localized for common languages. Other languages use
+a neutral creator heading with the original-language speech quote. Custom hook
+templates, creator mentions, and required hashtags are preserved as entered.
+Set custom templates in the streamer’s language. Existing delivered captions are
+not rewritten; this applies to newly rendered clips, including when the AI is
+disabled or unavailable.
 
 ### Copy a streamer setup
 
@@ -242,6 +251,11 @@ including existing files and the rclone mount under `/config`. It changes owners
 to UID/GID `1000:1000` and adds missing owner permissions; it does not make files
 world-writable or follow symbolic links. The application then runs without root
 privileges. The first startup can take longer with many cached models or clips.
+
+The app and its subprocesses use `/home/clipper` as their home directory, with
+config and cache directories there. Startup also resets inherited `/root` lookup
+paths after dropping privileges, so Streamlink does not try to read
+`/root/.config/streamlink/config`. Explicit XDG paths outside `/root` are retained.
 
 Read-only mounts and filesystems that prohibit ownership changes need to be
 configured on the host. A custom Compose `user:` override skips the root setup;
@@ -397,6 +411,7 @@ Docker logs cover the web process and container startup.
 | “Host not allowed” | Configure `CLIPPER_WEB_HOSTS`, or set `CLIPPER_WEB_SKIP_HOST_CHECK=true` in `.env` to [disable host verification](#disable-host-verification-completely). Recreate the container after changes. |
 | Container exits during migration | Inspect Docker logs and run `validate-config`; existing configurations are validated before autostart. |
 | Settings cannot be saved / permission denied | Rebuild to use [automatic folder permissions](#automatic-folder-permissions). If startup cannot repair a mount, check for read-only mounts, unsupported ownership changes, or a custom `user:` override. |
+| Streamlink reports permission denied under `/root/.config/streamlink/` | Rebuild with `docker compose up -d --build`. Updated startup sets the app’s home/config/cache paths to `/home/clipper`; changing permissions on `/root` is unnecessary. |
 | Panel says another service is running | Stop the old Docker, systemd, or CLI service. A recent heartbeat can remain for up to 90 seconds after an unexpected exit. |
 | Saved settings have no effect | Choose **Apply & restart** from Overview. |
 | Source produces no clips | Confirm it is enabled, live or accessible, and assigned a campaign. Inspect service logs and the [spike tuning guide](docs/advanced.md#live-spike-detection). |

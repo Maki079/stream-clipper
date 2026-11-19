@@ -152,7 +152,7 @@ def test_dry_run_live_with_llm(cfg, video, tmp_path, monkeypatch):
     monkeypatch.setattr(whisper, "transcribe", fake_transcribe)
     seen = []
 
-    def fake_judge(cfg_, segments, *, creator, moments, chat, total, min_len, max_len, default):
+    def fake_judge(cfg_, segments, *, creator, moments, chat, total, min_len, max_len, default, language="auto"):
         seen.append((segments, moments, total, default, min_len, max_len))
         if len(seen) == 1:
             return llm.Verdict(3, default[0], default[1], "", "nothing happens", False)

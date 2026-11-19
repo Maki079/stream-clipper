@@ -74,7 +74,7 @@ If you edit YAML manually, validate it with
 | `extra_hashtags` | optional extra tags |
 | `min_seconds` / `max_seconds` | allowed clip length (default 61–90) |
 | `allowed_platforms` | tiktok / instagram / youtube (written into the caption file notes) |
-| `caption_language` | en |
+| `caption_language` | fallback language (default `en`) when neither a source language nor detected speech language is available; descriptions otherwise follow the streamer |
 | `max_caption_chars` | 2200 |
 | `hook_templates` | your own first lines, `{creator}` is replaced; default is a built-in list |
 | `notes` | free text from the brief, copied under every caption |

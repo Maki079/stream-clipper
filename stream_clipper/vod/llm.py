@@ -16,7 +16,8 @@ L = log.get("llm")
 
 PROMPT = """You rate livestream transcript excerpts for short-form video (TikTok/Reels/Shorts).
 Rate how likely this excerpt is to make a viral, self-contained short (0 = boring, 10 = must post).
-Also write a short, punchy English hook title (max 8 words, no hashtags, no quotes).
+Also write a short, punchy hook title (max 8 words, no hashtags, no quotes).
+Hook language: {language}. Keep the title in this language; do not switch to another language.
 Answer ONLY with JSON: {{"score": <0-10>, "hook": "<title>"}}
 
 Creator: {creator}
@@ -25,13 +26,13 @@ Excerpt:
 """
 
 
-def rate(cfg: LlmCfg, text: str, creator: str = "") -> tuple[float, str] | None:
+def rate(cfg: LlmCfg, text: str, creator: str = "", *, language: str = "auto") -> tuple[float, str] | None:
     """(score 0-10, hook) or None if the LLM is unavailable/garbled (never fatal)."""
     if not cfg.enabled or not text.strip():
         return None
     try:
         r = httpx.post(f"{cfg.ollama_url.rstrip('/')}/api/generate", timeout=cfg.timeout_seconds, json={
-            "model": cfg.model, "prompt": PROMPT.format(creator=creator, text=text[:4000]), "stream": False, "think": cfg.think,
+            "model": cfg.model, "prompt": PROMPT.format(creator=creator, text=text[:4000], language=hook_language(language)), "stream": False, "think": cfg.think,
             "format": "json", "options": {"temperature": 0.2, "num_predict": 80}})
         r.raise_for_status()
         d = json.loads(r.json().get("response", "{}"))
@@ -43,8 +44,12 @@ def rate(cfg: LlmCfg, text: str, creator: str = "") -> tuple[float, str] | None:
         return None
 
 
-def hook(cfg: LlmCfg, text: str, creator: str = "") -> str | None:
-    res = rate(cfg, text, creator)
+def hook_language(language: str) -> str:
+    return "the same language as the speech transcript" if language == "auto" else f"ISO 639 language code '{language}'"
+
+
+def hook(cfg: LlmCfg, text: str, creator: str = "", *, language: str = "auto") -> str | None:
+    res = rate(cfg, text, creator, language=language)
     return res[1] if res and res[1] else None
 
 
@@ -75,9 +80,10 @@ right after a line means the line landed. With almost no speech judge from what 
 Cut: {min_len:.0f}-{max_len:.0f} s long, must contain second {first_moment}, start 10-25 s before it at the
 beginning of the situation (not mid-sentence), end shortly after the reaction settles.
 
-Hook: on-screen title for the first 3 seconds that makes a stranger stay. Max 6 words, English, specific to THIS
+Hook: on-screen title for the first 3 seconds that makes a stranger stay. Max 6 words, specific to THIS
 clip (names the thing that happens, teases the payoff without spoiling it), never about chat, no generic phrases,
 no hashtags, no emojis, no quotes.
+Hook language: {language}. Keep the hook in this language; do not switch to another language.
 
 Answer ONLY with JSON:
 {{"what_happens": "<one sentence>", "event": <true|false>, "payoff": <true|false>, "standalone": <true|false>, "intensity": <1-5>, "score": <0-10>, "start": <second>, "end": <second>, "hook": "<title>", "reason": "<max 12 words>"}}
@@ -160,7 +166,8 @@ def fit_window(start: float, end: float, *, total: float, min_len: float, max_le
 
 
 def judge_live(cfg: LlmCfg, segments: list[dict], *, creator: str, moments: list[float], chat: list[dict],
-               total: float, min_len: float, max_len: float, default: tuple[float, float]) -> Verdict | None:
+               total: float, min_len: float, max_len: float, default: tuple[float, float],
+               language: str = "auto") -> Verdict | None:
     """Rate a live clip and pick its cut from the timestamped transcript. None if the LLM is unavailable."""
     if not cfg.enabled:
         return None
@@ -168,7 +175,7 @@ def judge_live(cfg: LlmCfg, segments: list[dict], *, creator: str, moments: list
     prompt = JUDGE_PROMPT.format(creator=creator or "unknown", moments=", ".join(f"{m:.0f}" for m in moments) or "?",
                                  first_moment=f"{moments[0]:.0f}" if moments else "?",
                                  chat=chat_s[:600], total=total, transcript=_fmt_transcript(segments),
-                                 min_len=min_len, max_len=max_len)
+                                 min_len=min_len, max_len=max_len, language=hook_language(language))
     try:
         r = httpx.post(f"{cfg.ollama_url.rstrip('/')}/api/generate", timeout=cfg.timeout_seconds, json={
             "model": cfg.model, "prompt": prompt, "stream": False, "think": cfg.think, "format": "json", "keep_alive": "30m",

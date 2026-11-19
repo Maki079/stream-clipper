@@ -63,10 +63,19 @@ def test_entrypoint_drops_privileges_before_launching_app(monkeypatch, root):
     for method in ("setgroups", "setgid", "setuid"):
         monkeypatch.setattr(container.os, method, lambda value, method=method: calls.append((method, value)), raising=False)
     monkeypatch.setenv("CLIPPER_WEB_CONTAINER", "")
+    for key, value in {"HOME": "/root", "USER": "root", "LOGNAME": "root",
+                       "XDG_CONFIG_HOME": "/root/.config", "XDG_CACHE_HOME": "/root/.cache",
+                       "XDG_DATA_HOME": "/root/.local/share"}.items():
+        monkeypatch.setenv(key, value)
     monkeypatch.setattr(container.sys, "argv", ["entrypoint", "web", "--autostart"])
 
     def execute(command, args):
         assert os.environ["CLIPPER_WEB_CONTAINER"] == "true"
+        assert os.environ["HOME"] == "/home/clipper"
+        assert os.environ["USER"] == os.environ["LOGNAME"] == "clipper"
+        assert os.environ["XDG_CONFIG_HOME"] == "/home/clipper/.config"
+        assert os.environ["XDG_CACHE_HOME"] == "/home/clipper/.cache"
+        assert os.environ["XDG_DATA_HOME"] == "/home/clipper/.local/share"
         calls.append(("exec", command, args))
         raise RuntimeError("exec intercepted")
 
@@ -88,3 +97,27 @@ def test_unwritable_mount_fails_before_app_start(monkeypatch):
     monkeypatch.setattr(container, "prepare_directory", fail)
     with pytest.raises(SystemExit, match="Cannot prepare /config.*read-only mount"):
         container.main()
+
+
+@pytest.mark.parametrize("value", [None, "", "relative/config", "/root", "/root/.config"])
+def test_default_or_root_xdg_paths_use_application_home(monkeypatch, value):
+    for key in ("HOME", "USER", "LOGNAME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"):
+        monkeypatch.setenv(key, "")  # track even initially absent keys for teardown
+        monkeypatch.delenv(key, raising=False)
+    if value is not None:
+        monkeypatch.setenv("XDG_CONFIG_HOME", value)
+    container.configure_user_environment()
+    assert os.environ["HOME"] == "/home/clipper"
+    assert os.environ["XDG_CONFIG_HOME"] == "/home/clipper/.config"
+
+
+def test_explicit_non_root_xdg_paths_are_preserved(monkeypatch):
+    values = {"HOME": "/root", "USER": "root", "LOGNAME": "root",
+              "XDG_CONFIG_HOME": "/config/third-party", "XDG_CACHE_HOME": "/data/cache",
+              "XDG_DATA_HOME": "/data/share"}
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    container.configure_user_environment()
+    for key in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"):
+        assert os.environ[key] == values[key]
+    assert os.environ["HOME"] == "/home/clipper"

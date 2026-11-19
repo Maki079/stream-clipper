@@ -33,7 +33,8 @@ def compute_features(wav: Path, video: Path | None, segments: list[dict], src: S
 
 
 def select_windows(feats: dict[str, np.ndarray], segments: list[dict], src: SourceCfg, min_len: int, max_len: int,
-                   llm_cfg: LlmCfg | None = None, creator: str = "") -> tuple[list[scoring.Window], np.ndarray]:
+                   llm_cfg: LlmCfg | None = None, creator: str = "", *,
+                   language: str = "auto") -> tuple[list[scoring.Window], np.ndarray]:
     score = scoring.combine(feats, src.vod.weights.model_dump())
     duration = float(len(score))
     if duration < min_len:
@@ -46,7 +47,8 @@ def select_windows(feats: dict[str, np.ndarray], segments: list[dict], src: Sour
         w.detail["heuristic"] = round(w.score, 3)
     if use_llm:
         for w in picked:
-            res = llm.rate(llm_cfg, " ".join(text.sentences(segments, w.start, w.end)), creator)
+            res = llm.rate(llm_cfg, " ".join(text.sentences(segments, w.start, w.end)), creator,
+                           language=src.language if src.language != "auto" else language)
             if res:
                 w.detail["llm_score"] = res[0]
                 w.hook = res[1] or None

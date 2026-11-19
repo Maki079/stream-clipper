@@ -4,10 +4,22 @@ from __future__ import annotations
 import os
 import stat
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-WRITABLE_DIRS = ("/config", "/data", "/buffer", "/models", "/output")
+APP_HOME = "/home/clipper"
+WRITABLE_DIRS = ("/config", "/data", "/buffer", "/models", "/output", APP_HOME)
 APP_UID = APP_GID = 1000
+
+
+def configure_user_environment() -> None:
+    """setuid does not update root's inherited HOME or XDG lookup paths."""
+    os.environ.update(HOME=APP_HOME, USER="clipper", LOGNAME="clipper")
+    defaults = {"XDG_CONFIG_HOME": f"{APP_HOME}/.config", "XDG_CACHE_HOME": f"{APP_HOME}/.cache",
+                "XDG_DATA_HOME": f"{APP_HOME}/.local/share"}
+    for key, default in defaults.items():
+        current = PurePosixPath(os.environ.get(key, ""))
+        if not current.is_absolute() or current.is_relative_to("/root"):
+            os.environ[key] = default
 
 
 def prepare_directory(path: Path, uid: int = APP_UID, gid: int = APP_GID) -> None:
@@ -50,6 +62,7 @@ def main() -> None:
         os.setgroups([])
         os.setgid(APP_GID)
         os.setuid(APP_UID)
+    configure_user_environment()
     # This is set only by the Docker entrypoint, not by ordinary local web runs.
     os.environ["CLIPPER_WEB_CONTAINER"] = "true"
     os.execvp("stream-clipper", ["stream-clipper", *sys.argv[1:]])

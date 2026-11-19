@@ -188,7 +188,7 @@ class CampaignCfg(Strict):
     extra_hashtags: list[str] = []
     creator_name: str = Field(..., description="text that must appear in the caption, e.g. @kaicenat")
     creator_aliases: list[str] = Field([], description="words that identify this creator in transcript/chat")
-    caption_language: str = "en"
+    caption_language: str = Field("en", description="Fallback caption language when the source language and detected speech language are unavailable; captions otherwise follow the streamer")
     allowed_platforms: list[Platform] = ["tiktok", "instagram", "youtube"]
     min_seconds: int = Field(61, ge=5)
     max_seconds: int = Field(90, ge=5)

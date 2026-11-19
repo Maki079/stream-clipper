@@ -112,7 +112,9 @@ def _judge(ctx: Context, clip: dict, src, tr: dict, offset: float, duration: flo
     moments = [round(offset + t, 1) for t in _chat_moments(clip, offset)]
     v = llm_mod.judge_live(llm, tr["segments"], creator=camps[0].creator_name if camps else clip["source"],
                            moments=moments, chat=clip["meta"].get("top_chat", []), total=total,
-                           min_len=min_len, max_len=max(max_len, min_len), default=(offset, offset + duration))
+                           min_len=min_len, max_len=max(max_len, min_len), default=(offset, offset + duration),
+                           language=captions.resolve_language(src.language, tr.get("language"),
+                                                              camps[0].caption_language if camps else "en"))
     if v is not None:
         L.info("llm verdict", extra={"clip_id": clip["id"], "score": v.score, "reason": v.reason, "hook": v.hook,
                                      "cut": [v.start, v.end], "trimmed": v.trimmed})
@@ -138,7 +140,7 @@ def handle_render(ctx: Context, p: dict) -> None:
     wav_all = media.extract_audio(raw, work / "audio_all.wav", t_base, t_len)
     tr = whisper.transcribe(ctx, wav_all, language=src.language)
     wav_all.unlink(missing_ok=True)
-    (work / "transcript.json").write_text(json.dumps(tr, ensure_ascii=False))
+    (work / "transcript.json").write_text(json.dumps(tr, ensure_ascii=False), encoding="utf-8")
     chat_moments = _chat_moments(clip, offset)  # relative to the planned start
 
     # 2) LLM: score (skip boring ones before spending render time), cut, hook
@@ -164,12 +166,17 @@ def handle_render(ctx: Context, p: dict) -> None:
                  for s in tr["segments"] if s["end"] > a and s["start"] < a + duration]
     tr = tr | {"segments": segs_clip}
 
-    hook = m.get("hook") or (verdict.hook if verdict is not None else None)
+    campaigns = _clip_campaigns(ctx, clip)
+    language = captions.resolve_language(src.language, tr.get("language"),
+                                         campaigns[0].caption_language if campaigns else "en")
+    # Older queued VODs may contain English hooks without a recorded language.
+    cached_hook = m.get("hook") if m.get("hook_language", "en") == language else None
+    hook = cached_hook or (verdict.hook if verdict is not None else None)
 
     # 3) subtitles (+ hook title) + render
     ass = work / "subs.ass"
     show_hook = hook if (llm.enabled and llm.hook_overlay and clip["mode"] == "live") else None
-    ass.write_text(build_ass(words, ctx.cfg.g.output, src.layout, hook=show_hook, hook_seconds=llm.hook_seconds))
+    ass.write_text(build_ass(words, ctx.cfg.g.output, src.layout, hook=show_hook, hook_seconds=llm.hook_seconds), encoding="utf-8")
     out = work / f"{clip['id']}.mp4"
     wav = media.extract_audio(raw, work / "audio.wav", offset, duration)
     effects, zooms = motion.plan(wav, duration, ctx.cfg.g.output.motion, src.layout, ctx.cfg.g.output,
@@ -194,23 +201,22 @@ def handle_render(ctx: Context, p: dict) -> None:
     suggested = captions.suggest_campaigns(ctx.cfg.campaigns, clip["campaigns"], transcript_text + " " + chat_text)
 
     # 4) captions
-    quote = None
-    if tr["language"] == "en":
-        kws = src.vod.keywords
-        quote = vtext.quotable_line(tr["segments"], 0, duration, kws)
+    quote = vtext.quotable_line(tr["segments"], 0, duration, src.vod.keywords)
     if not hook and ctx.cfg.g.llm.enabled and verdict is None:
         first = ctx.cfg.campaigns.get(tagged[0]) if tagged else None
-        hook = llm_mod.hook(ctx.cfg.g.llm, transcript_text, first.creator_name if first else "")
+        hook = llm_mod.hook(ctx.cfg.g.llm, transcript_text, first.creator_name if first else "", language=language)
     caps = {}
     for name in tagged:
         c = ctx.cfg.campaigns[name]
-        text = captions.build_caption(clip["id"], c, hook=hook, quote=quote)
+        caption_language = captions.resolve_language(src.language, tr.get("language"), c.caption_language)
+        text = captions.build_caption(clip["id"], c, hook=hook, quote=quote, language=caption_language)
         problems = captions.validate(text, c)
-        (work / f"{clip['id']}.{name}.txt").write_text(captions.caption_file_text(text, problems, c))
-        caps[name] = {"text": text, "problems": problems}
+        (work / f"{clip['id']}.{name}.txt").write_text(captions.caption_file_text(text, problems, c), encoding="utf-8")
+        caps[name] = {"text": text, "problems": problems, "language": caption_language}
 
     ctx.store.update_clip(clip["id"], status="rendered", campaigns=tagged, meta_update={
         "video": str(out), "duration": round(real_len, 2), "language": tr["language"], "quote": quote, "hook": hook,
+        "hook_language": language,
         "captions": caps, "rejected_campaigns": rejected, "suggested_campaigns": suggested,
         "transcript_excerpt": transcript_text[:1500], "zooms": zooms, "render_offset": round(offset, 3)} | llm_meta)
     wav.unlink(missing_ok=True)
@@ -240,6 +246,7 @@ def sidecar(ctx: Context, clip: dict) -> dict:
         "campaigns": clip["campaigns"], "suggested_campaigns": m.get("suggested_campaigns", []),
         "rejected_campaigns": m.get("rejected_campaigns", {}),
         "duration": m.get("duration"), "language": m.get("language"), "hook": m.get("hook"),
+        "hook_language": m.get("hook_language"),
         "captions": m.get("captions", {}),
         "created": datetime.fromtimestamp(clip["created_at"], tz).isoformat(timespec="seconds"),
     }
@@ -273,7 +280,7 @@ def handle_deliver(ctx: Context, p: dict) -> None:
     work = video.parent
     date = datetime.fromtimestamp(clip["created_at"], ZoneInfo(ctx.cfg.g.timezone)).strftime("%Y-%m-%d")
     side = work / f"{clip['id']}.json"
-    side.write_text(json.dumps(sidecar(ctx, clip), ensure_ascii=False, indent=2))
+    side.write_text(json.dumps(sidecar(ctx, clip), ensure_ascii=False, indent=2), encoding="utf-8")
     already = {d["campaign"]: d for d in ctx.store.deliveries(clip["id"])}
     targets = clip["campaigns"] or ["_untagged"]
     deliveries, first_remote = [], None
@@ -365,7 +372,7 @@ def handle_transcribe_full(ctx: Context, p: dict) -> None:
     if not out.exists():
         wav = media.extract_audio(Path(p["video"]), d / "audio.wav")
         tr = whisper.transcribe(ctx, wav, language=src.language, model=ctx.cfg.g.whisper.vod_scoring_model)
-        out.write_text(json.dumps(tr, ensure_ascii=False))
+        out.write_text(json.dumps(tr, ensure_ascii=False), encoding="utf-8")
     ctx.queue.enqueue("analyze_vod", p, priority=PRIORITY_VOD, dedupe_key=f"analyze:{p['key']}")
 
 
@@ -373,7 +380,7 @@ def handle_analyze_vod(ctx: Context, p: dict) -> None:
     src = _src(ctx, p["source"])
     d = ctx.vod_dir(p["key"])
     video = Path(p["video"])
-    tr = json.loads((d / "transcript.json").read_text())
+    tr = json.loads((d / "transcript.json").read_text(encoding="utf-8"))
     wav = d / "audio.wav"
     if not wav.exists():
         media.extract_audio(video, wav)
@@ -381,7 +388,8 @@ def handle_analyze_vod(ctx: Context, p: dict) -> None:
     lo, hi = analyze.vod_length_limits(src, campaigns)
     feats = analyze.compute_features(wav, video, tr["segments"], src, ctx.threads)
     creator = campaigns[0].creator_name if campaigns else ""
-    windows, score = analyze.select_windows(feats, tr["segments"], src, lo, hi, ctx.cfg.g.llm, creator)
+    language = captions.resolve_language(src.language, tr.get("language"), campaigns[0].caption_language if campaigns else "en")
+    windows, score = analyze.select_windows(feats, tr["segments"], src, lo, hi, ctx.cfg.g.llm, creator, language=language)
     (d / "scores.csv").write_text("second,score\n" + "".join(f"{i},{v:.4f}\n" for i, v in enumerate(score)))
     L.info("vod analyzed", extra={"source": p["source"], "key": p["key"], "windows": len(windows), "length": len(score)})
     if not windows:
@@ -390,7 +398,7 @@ def handle_analyze_vod(ctx: Context, p: dict) -> None:
     for rank, w in enumerate(windows, 1):
         cid = f"{p['source']}-{p['key'].split(':')[-1][:16]}-{int(w.start):05d}"
         meta = {"raw": str(video), "offset": w.start, "duration": round(w.length, 3), "item_key": p["key"],
-                "item_url": p["url"], "title": p.get("title", ""), "hook": w.hook,
+                "item_url": p["url"], "title": p.get("title", ""), "hook": w.hook, "hook_language": language,
                 "highlight": w.detail | {"rank_in_video": rank}}
         ctx.store.add_clip(cid, p["source"], "vod", w.start, w.end, round(w.score, 3), list(src.campaigns), meta, status="cut")
         ctx.queue.enqueue("render", {"clip_id": cid}, priority=PRIORITY_VOD, dedupe_key=f"render:{cid}")

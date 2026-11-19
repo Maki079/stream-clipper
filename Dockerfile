@@ -32,8 +32,14 @@ COPY assets ./assets
 COPY config/config.example.yaml /app/config.example.yaml
 
 RUN useradd -m -u 1000 clipper \
- && mkdir -p /config /data /buffer /models /output \
- && chown -R clipper:clipper /config /data /buffer /models /output
+ && mkdir -p /config /data /buffer /models /output /home/clipper/.config /home/clipper/.cache /home/clipper/.local/share \
+ && chown -R clipper:clipper /config /data /buffer /models /output /home/clipper
+ENV HOME=/home/clipper \
+    USER=clipper \
+    LOGNAME=clipper \
+    XDG_CONFIG_HOME=/home/clipper/.config \
+    XDG_CACHE_HOME=/home/clipper/.cache \
+    XDG_DATA_HOME=/home/clipper/.local/share
 # Startup repairs bind mounts as root, then drops to the clipper UID/GID before
 # starting the web panel, capture supervisor, or any media processing.
 USER root

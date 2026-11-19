@@ -17,6 +17,45 @@ DEFAULT_HOOKS = [
     "This moment broke the stream 🔥",
 ]
 
+LOCALIZED_HOOKS = {
+    "en": DEFAULT_HOOKS,
+    "pl": ["Tego nikt się nie spodziewał 😭", "{creator} i ten moment 🔥", "Warto było na to czekać 👀"],
+    "sk": ["Toto nikto nečakal 😭", "{creator} a tento moment 🔥"],
+    "cs": ["Tohle nikdo nečekal 😭", "{creator} a tenhle moment 🔥"],
+    "de": ["Damit hat niemand gerechnet 😭", "Dieser Moment mit {creator} 🔥"],
+    "fr": ["Personne ne s’attendait à ça 😭", "Ce moment avec {creator} 🔥"],
+    "es": ["Nadie se esperaba esto 😭", "Este momento de {creator} 🔥"],
+    "it": ["Nessuno se lo aspettava 😭", "Questo momento con {creator} 🔥"],
+    "pt": ["Ninguém esperava por isto 😭", "Este momento de {creator} 🔥"],
+    "nl": ["Dit had niemand verwacht 😭", "Dit moment met {creator} 🔥"],
+    "uk": ["Цього ніхто не очікував 😭", "Цей момент із {creator} 🔥"],
+    "ru": ["Этого никто не ожидал 😭", "Этот момент с {creator} 🔥"],
+    "tr": ["Bunu kimse beklemiyordu 😭", "{creator} ile bu an 🔥"],
+    "ar": ["لم يتوقع أحد هذا 😭", "هذه اللحظة مع {creator} 🔥"],
+    "zh": ["谁也没想到这一幕 😭", "{creator} 的精彩瞬间 🔥"],
+    "ja": ["誰も予想していなかった展開 😭", "{creator} のこの瞬間 🔥"],
+    "ko": ["아무도 예상 못 한 순간 😭", "{creator}의 이 순간 🔥"],
+    "hi": ["किसी ने इसकी उम्मीद नहीं की थी 😭", "{creator} का यह पल 🔥"],
+    "sv": ["Det här hade ingen väntat sig 😭", "Det här ögonblicket med {creator} 🔥"],
+    "no": ["Dette hadde ingen ventet 😭", "Dette øyeblikket med {creator} 🔥"],
+    "da": ["Det havde ingen forventet 😭", "Dette øjeblik med {creator} 🔥"],
+    "fi": ["Tätä ei kukaan odottanut 😭", "Tämä hetki ja {creator} 🔥"],
+    "ro": ["Nimeni nu se aștepta la asta 😭", "Acest moment cu {creator} 🔥"],
+    "hu": ["Erre senki sem számított 😭", "Ez a pillanat: {creator} 🔥"],
+    "bg": ["Никой не очакваше това 😭", "Този момент с {creator} 🔥"],
+    "id": ["Tidak ada yang menyangka ini 😭", "Momen ini bersama {creator} 🔥"],
+    "vi": ["Không ai ngờ điều này 😭", "Khoảnh khắc này của {creator} 🔥"],
+}
+
+
+def resolve_language(source: str | None = None, detected: str | None = None, fallback: str = "en") -> str:
+    """Prefer the streamer's configured language, then speech detection, then campaign fallback."""
+    for value in (source, detected, fallback, "en"):
+        code = (value or "").strip().lower().replace("_", "-").split("-")[0]
+        if code not in ("", "auto", "und", "unknown"):
+            return code
+    return "en"
+
 
 def _pick(options: list[str], seed: str) -> str:
     h = int(hashlib.sha1(seed.encode()).hexdigest(), 16)
@@ -31,8 +70,12 @@ def display_name(c: CampaignCfg) -> str:
     return c.creator_name.lstrip("@") if PLACEHOLDER not in c.creator_name else "they"
 
 
-def build_caption(clip_id: str, c: CampaignCfg, *, hook: str | None = None, quote: str | None = None) -> str:
-    templates = c.hook_templates or DEFAULT_HOOKS
+def build_caption(clip_id: str, c: CampaignCfg, *, hook: str | None = None, quote: str | None = None,
+                  language: str | None = None) -> str:
+    language = resolve_language(language, fallback=c.caption_language)
+    # For other languages, keep the heading neutral and use the original speech
+    # quote below rather than introducing an English sentence.
+    templates = c.hook_templates or LOCALIZED_HOOKS.get(language, ["🎬 {creator}"])
     line1 = (hook or _pick(templates, clip_id)).replace("{creator}", display_name(c)).strip()
     parts = [line1]
     if quote:
@@ -44,7 +87,7 @@ def build_caption(clip_id: str, c: CampaignCfg, *, hook: str | None = None, quot
     parts.append(" ".join(tags))
     text = "\n".join(p for p in parts if p)
     if len(text) > c.max_caption_chars and quote:
-        return build_caption(clip_id, c, hook=hook, quote=None)
+        return build_caption(clip_id, c, hook=hook, quote=None, language=language)
     return text
 
 
