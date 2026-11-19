@@ -32,6 +32,15 @@ def revision(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "missing"
 
 
+def env_flag(name: str) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    if value in ("", "0", "false", "no", "off"):
+        return False
+    if value in ("1", "true", "yes", "on"):
+        return True
+    raise ConfigError(f"{name} must be true or false (also accepts 1/0, yes/no, on/off).")
+
+
 class ConflictError(Exception):
     pass
 
@@ -222,11 +231,13 @@ class WebApp:
 class WebServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, app, *, password="", allowed_hosts=()):
+    def __init__(self, address, app, *, password="", allowed_hosts=(), skip_host_check=False):
         self.app, self.password = app, password
+        self.skip_host_check = skip_host_check
         self.allowed_hosts = {"localhost", "127.0.0.1", "::1", *allowed_hosts}
-        for rule in self.allowed_hosts:
-            parse_host_rule(rule)
+        if not skip_host_check:
+            for rule in self.allowed_hosts:
+                parse_host_rule(rule)
         super().__init__(address, Handler)
 
 
@@ -249,21 +260,22 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def authorized(self):
-        try:
-            headers = self.headers.get_all("Host", [])
-            if len(headers) != 1 or any(char.isspace() for char in headers[0]):
-                raise ValueError("Invalid Host header")
-            authority = urlsplit("//" + headers[0])
-            # Accept only a host with an optional port, never a URL or userinfo.
-            if authority.username is not None or authority.path or authority.query or authority.fragment:
-                raise ValueError("Invalid Host header")
-            authority.port  # validate the optional port
-            host = authority.hostname
-        except ValueError:
-            host = None
-        if not host_allowed(host, self.server.allowed_hosts):
-            self.send_data({"error": "Host not allowed. Configure CLIPPER_WEB_HOSTS for remote access."}, 403)
-            return False
+        if not self.server.skip_host_check:
+            try:
+                headers = self.headers.get_all("Host", [])
+                if len(headers) != 1 or any(char.isspace() for char in headers[0]):
+                    raise ValueError("Invalid Host header")
+                authority = urlsplit("//" + headers[0])
+                # Accept only a host with an optional port, never a URL or userinfo.
+                if authority.username is not None or authority.path or authority.query or authority.fragment:
+                    raise ValueError("Invalid Host header")
+                authority.port  # validate the optional port
+                host = authority.hostname
+            except ValueError:
+                host = None
+            if not host_allowed(host, self.server.allowed_hosts):
+                self.send_data({"error": "Host not allowed. Configure CLIPPER_WEB_HOSTS for remote access."}, 403)
+                return False
         if self.server.password:
             expected = "Basic " + base64.b64encode(("admin:" + self.server.password).encode()).decode()
             if not hmac.compare_digest(self.headers.get("Authorization", ""), expected):
@@ -344,10 +356,12 @@ class Handler(BaseHTTPRequestHandler):
 def serve(args):
     hosts = [h.strip() for h in os.environ.get("CLIPPER_WEB_HOSTS", "").split(",") if h.strip()]
     password = os.environ.get("CLIPPER_WEB_PASSWORD", "")
-    if hosts and not password:
+    skip_host_check = env_flag("CLIPPER_WEB_SKIP_HOST_CHECK")
+    if hosts and not password and not skip_host_check:
         raise ConfigError("Set CLIPPER_WEB_PASSWORD before enabling remote hosts (login: admin).")
     app = WebApp(args.config, record_chat=args.record_chat)
-    server = WebServer((args.host, args.port), app, password=password, allowed_hosts=hosts)
+    server = WebServer((args.host, args.port), app, password=password, allowed_hosts=hosts,
+                       skip_host_check=skip_host_check)
     def shutdown(signum, frame):
         threading.Thread(target=server.shutdown, daemon=True).start()
     for sig in (signal.SIGINT, signal.SIGTERM):

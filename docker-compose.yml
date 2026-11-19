@@ -19,6 +19,7 @@ services:
       - TZ=Europe/Bratislava
       - CLIPPER_WEB_PASSWORD=${CLIPPER_WEB_PASSWORD:-}
       - CLIPPER_WEB_HOSTS=${CLIPPER_WEB_HOSTS:-}
+      - CLIPPER_WEB_SKIP_HOST_CHECK=${CLIPPER_WEB_SKIP_HOST_CHECK:-false}
     volumes:
       - ./config:/config            # config.yaml
       - ./rclone:/config/rclone     # rclone.conf (Google Drive OAuth), only needed for delivery.backend: rclone

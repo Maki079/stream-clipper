@@ -211,7 +211,8 @@ fields in `config/config.yaml` or the panel’s Settings page.
 
    Replace these examples with your password and the hostname/IP you enter in
    your browser. Separate multiple hosts with commas. Do not include `http://`,
-   `https://`, ports, or URL paths. A nonempty host list requires a password.
+   `https://`, ports, or URL paths. A nonempty host list requires a password
+   when host verification is enabled.
    Localhost is always allowed; leave the hosts field empty for SSH tunnel access.
    You can set a password alone to require login on localhost.
 
@@ -237,7 +238,29 @@ Compose, export these variables yourself; the Python application does not load
 
 The `.env` file is ignored by Git. Keep it private, and copy it separately when
 migrating to a new checkout. The [.env.example](.env.example) template contains no
-credentials and documents both variables.
+credentials and documents the available variables.
+
+### Disable host verification completely
+
+If host verification prevents access, add this to `.env` beside `docker-compose.yml`:
+
+```dotenv
+CLIPPER_WEB_SKIP_HOST_CHECK=true
+```
+
+Then rebuild and recreate the container to load the updated code and environment:
+
+```bash
+docker compose up -d --build
+```
+
+This completely skips the application’s Host-header checks. `CLIPPER_WEB_HOSTS`
+is ignored, including invalid entries. Configured password login and CSRF
+protection remain active. The port binding still controls network access; this
+option does not expose the localhost-only port. Set the option back to `false`
+and recreate the container to restore host verification (the default).
+
+### Host rule syntax
 
 Supported host rules can be mixed in the same comma-separated list:
 
@@ -299,7 +322,7 @@ Docker logs cover the web process and container startup.
 | Problem | What to check |
 | --- | --- |
 | Panel will not open | Confirm the clipper container is running and port 8080 is available. For remote servers, use the SSH tunnel above. |
-| “Host not allowed” | Use localhost through SSH, or configure the requested hostname in `CLIPPER_WEB_HOSTS` together with a password. |
+| “Host not allowed” | Configure `CLIPPER_WEB_HOSTS`, or set `CLIPPER_WEB_SKIP_HOST_CHECK=true` in `.env` to [disable host verification](#disable-host-verification-completely). Recreate the container after changes. |
 | Container exits during migration | Inspect Docker logs and run `validate-config`; existing configurations are validated before autostart. |
 | Settings cannot be saved / permission denied | Ensure bind-mounted directories are writable by UID/GID `1000:1000`. On a dedicated Linux installation, an administrator can set ownership with `sudo chown -R 1000:1000 config data buffer models output rclone`. |
 | Panel says another service is running | Stop the old Docker, systemd, or CLI service. A recent heartbeat can remain for up to 90 seconds after an unexpected exit. |

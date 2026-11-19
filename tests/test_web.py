@@ -3,12 +3,14 @@ import json
 import subprocess
 import threading
 import time
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 import pytest
 
 from stream_clipper import db
+from stream_clipper import web
 from stream_clipper.config import ConfigError, load_config
 from stream_clipper.queue import JobQueue
 from stream_clipper.web import ConflictError, WebApp, WebServer, host_allowed
@@ -242,3 +244,59 @@ def test_wildcard_does_not_bypass_password_or_csrf(server):
     headers["Authorization"] = "Basic " + base64.b64encode(b"admin:test").decode()
     assert request(server, "/api/config", headers=headers)[0] == 200
     assert request(server, "/api/retry", {}, headers)[0] == 403
+
+
+def test_host_bypass_keeps_password_and_csrf_checks(server):
+    headers = {"Host": "unlisted.example"}
+    assert request(server, "/api/config", headers=headers)[0] == 403
+    server.skip_host_check = True
+    server.password = "test"
+    assert request(server, "/api/config", headers=headers)[0] == 401
+    headers["Authorization"] = "Basic " + base64.b64encode(b"admin:test").decode()
+    code, body, _ = request(server, "/api/config", headers=headers)
+    assert code == 200
+    result = json.loads(body)
+    assert request(server, "/", headers=headers)[0] == 200
+    assert request(server, "/api/validate", {"config": result["config"]}, headers)[0] == 403
+    headers["X-Clipper-CSRF"] = result["csrf"]
+    assert request(server, "/api/validate", {"config": result["config"]}, headers)[0] == 200
+    server.skip_host_check = False
+    assert request(server, "/api/config", headers=headers)[0] == 403
+
+
+def test_host_bypass_skips_header_parsing_and_rule_validation(app):
+    server = WebServer(("127.0.0.1", 0), app, allowed_hosts=["not/a/network"], skip_host_check=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert request(server, "/api/status", headers={"Host": "arbitrary.example/path"})[0] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("value,expected", [(None, False), ("false", False), ("0", False),
+                                          ("true", True), ("1", True), (" YES ", True)])
+def test_host_bypass_environment_flag(monkeypatch, value, expected):
+    monkeypatch.delenv("CLIPPER_WEB_SKIP_HOST_CHECK", raising=False)
+    if value is not None:
+        monkeypatch.setenv("CLIPPER_WEB_SKIP_HOST_CHECK", value)
+    assert web.env_flag("CLIPPER_WEB_SKIP_HOST_CHECK") is expected
+
+
+def test_host_bypass_environment_wired_to_server(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLIPPER_WEB_SKIP_HOST_CHECK", "true")
+    monkeypatch.setenv("CLIPPER_WEB_HOSTS", "invalid/host/rule")
+    monkeypatch.delenv("CLIPPER_WEB_PASSWORD", raising=False)
+    monkeypatch.setattr(WebServer, "serve_forever", lambda self: None)
+    monkeypatch.setattr(web.signal, "signal", lambda *args: None)
+    args = SimpleNamespace(config=tmp_path / "config.yaml", host="127.0.0.1", port=0,
+                           record_chat=False, autostart=False)
+    web.serve(args)  # ignores both the invalid allowlist and its password requirement
+    monkeypatch.setenv("CLIPPER_WEB_SKIP_HOST_CHECK", "typo")
+    with pytest.raises(ConfigError, match="CLIPPER_WEB_SKIP_HOST_CHECK must be true or false"):
+        web.serve(args)
+    monkeypatch.setenv("CLIPPER_WEB_SKIP_HOST_CHECK", "false")
+    with pytest.raises(ConfigError, match="Set CLIPPER_WEB_PASSWORD"):
+        web.serve(args)
